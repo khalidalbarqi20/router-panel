@@ -1,0 +1,28 @@
+name: build-apk
+on: [push, workflow_dispatch]
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Create Android project and apply sources
+        run: |
+          flutter create --platforms=android --project-name router_panel app
+          cp -f pubspec.yaml app/pubspec.yaml
+          rm -f app/lib/main.dart
+          cp -r lib/. app/lib/
+          M=app/android/app/src/main/AndroidManifest.xml
+          sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET"/><application|' $M
+          sed -i 's|<application|<application android:usesCleartextTraffic="true"|' $M
+      - name: Build
+        working-directory: app
+        run: |
+          flutter pub get
+          flutter build apk --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: router-panel-apk
+          path: app/build/app/outputs/flutter-apk/app-release.apk
