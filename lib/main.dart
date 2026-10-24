@@ -16,6 +16,34 @@ class Resp {
   Resp(this.body, this.headers);
 }
 
+class LoginError implements Exception {
+  final String code, wait, text;
+  LoginError(this.code, this.wait, this.text);
+  @override
+  String toString() => text;
+}
+
+LoginError loginErr(String code, String wait) {
+  switch (code) {
+    case '108006':
+    case '108002':
+    case '108001':
+      return LoginError(code, wait,
+          'كلمة المرور (أو اسم المستخدم) غير صحيحة. لا تخمّن، لأن الراوتر يقفل الدخول بعد محاولات فاشلة. جرّب نفس الكلمة من المتصفح على عنوان الراوتر للتأكد. (الكود $code)');
+    case '108007':
+      return LoginError(code, wait,
+          'الراوتر قفل الدخول مؤقتًا بسبب محاولات فاشلة. انتظر ثم أعد المحاولة${wait.isEmpty ? '' : ' (مدة الانتظار اللي أعطاها الراوتر: $wait)'}. (الكود $code)');
+    case '108003':
+      return LoginError(code, wait,
+          'فيه جلسة دخول ثانية مفتوحة على الراوتر (مثل صفحته في المتصفح). اقفلها وأعد المحاولة. (الكود $code)');
+    case '108005':
+      return LoginError(code, wait,
+          'عدد المستخدمين المسجلين بالراوتر وصل الحد. اقفل جلسة ثانية وأعد المحاولة. (الكود $code)');
+    default:
+      return LoginError(code, wait, 'رفض الراوتر الدخول (الكود $code).');
+  }
+}
+
 class Huawei {
   final String host;
   final HttpClient _h = HttpClient()..connectionTimeout = const Duration(seconds: 8);
@@ -84,6 +112,8 @@ class Huawei {
     final c = await _req('POST', '/api/user/challenge_login',
         body: '<?xml version="1.0" encoding="UTF-8"?><request><username>admin</username>'
             '<firstnonce>$cn</firstnonce><mode>1</mode></request>');
+    final e1 = err(c.body);
+    if (e1 != null) throw loginErr(e1, tag(c.body, 'waittime'));
     final sn = tag(c.body, 'servernonce'), salt = tag(c.body, 'salt');
     final it = int.tryParse(tag(c.body, 'iterations'));
     if (sn.isEmpty || it == null) throw 'رد غير متوقع من الراوتر عند الدخول: ${c.body}';
@@ -91,7 +121,8 @@ class Huawei {
     final f = await _req('POST', '/api/user/authentication_login',
         body: '<?xml version="1.0" encoding="UTF-8"?><request><clientproof>'
             '${_proof(cn, sn, pw, salt, it)}</clientproof><finalnonce>$sn</finalnonce></request>');
-    if (err(f.body) != null) throw 'فشل الدخول (${err(f.body)}): تأكد من كلمة المرور، وقد يكون الدخول مقفولًا مؤقتًا.';
+    final e2 = err(f.body);
+    if (e2 != null) throw loginErr(e2, tag(f.body, 'waittime'));
     _tok = f.headers.value('__requestverificationtokenone') ??
         f.headers.value('__requestverificationtoken') ?? _tok;
   }
@@ -232,6 +263,8 @@ class _H extends State<Home> {
   String nb = '3fffffff', msg = '', report = '', isp = '', model = 'ROUTER';
   bool busy = false, remember = true, _poll = false, awake = false;
   String ant = '', antType = '';
+  int fails = 0, cool = 0;
+  Timer? coolT;
   int tab = 0;
   Timer? timer;
 
@@ -244,6 +277,7 @@ class _H extends State<Home> {
   @override
   void dispose() {
     timer?.cancel();
+    coolT?.cancel();
     super.dispose();
   }
 
@@ -260,7 +294,7 @@ class _H extends State<Home> {
       if (h != null) host.text = h;
       if (p != null) {
         pw.text = p;
-        await doLogin();
+        await doLogin(auto: true);
       }
     } catch (_) {}
   }
@@ -308,9 +342,24 @@ class _H extends State<Home> {
     });
   }
 
-  Future<void> doLogin() => run(() async {
+  Future<void> doLogin({bool auto = false}) => run(() async {
         final h = Huawei(host.text.trim());
-        await h.login(pw.text);
+        try {
+          await h.login(pw.text);
+          fails = 0;
+        } on LoginError catch (e) {
+          if (e.code == '108007') {
+            startCool();
+          } else if (['108006', '108002', '108001'].contains(e.code)) {
+            fails++;
+            if (auto) {
+              await _st.delete(key: 'pw');
+              pw.clear();
+            }
+          }
+          throw LoginError(e.code, e.wait,
+              fails > 0 ? '${e.text}\nمحاولات فاشلة متتالية من التطبيق: $fails' : e.text);
+        }
         _pw = pw.text;
         if (remember) {
           await _st.write(key: 'host', value: host.text.trim());
@@ -347,6 +396,24 @@ class _H extends State<Home> {
           _poll = false;
         });
       });
+
+  void startCool() {
+    coolT?.cancel();
+    cool = 120;
+    coolT = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) {
+        t.cancel();
+        return;
+      }
+      setState(() {
+        cool--;
+        if (cool <= 0) {
+          cool = 0;
+          t.cancel();
+        }
+      });
+    });
+  }
 
   Future<void> toggleAwake(bool v) async {
     setState(() => awake = v);
@@ -619,7 +686,9 @@ class _H extends State<Home> {
             onChanged: (v) => setState(() => remember = v ?? true),
             title: const Text('حفظ كلمة المرور على هذا الجهاز (مشفّرة)'),
             controlAffinity: ListTileControlAffinity.leading),
-        FilledButton(onPressed: busy ? null : doLogin, child: const Text('دخول')),
+        FilledButton(
+            onPressed: busy || cool > 0 ? null : () => doLogin(),
+            child: Text(cool > 0 ? 'انتظر ${cool ~/ 60}:${(cool % 60).toString().padLeft(2, '0')}' : 'دخول')),
         if (busy) const Padding(padding: EdgeInsets.all(12), child: LinearProgressIndicator()),
         if (msg.isNotEmpty) Padding(padding: const EdgeInsets.all(10), child: SelectableText(msg)),
       ]);
