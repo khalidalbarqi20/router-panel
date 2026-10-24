@@ -6,6 +6,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 const _st = FlutterSecureStorage();
 
@@ -115,6 +116,7 @@ class Huawei {
 }
 
 const ML = {'00': 'تلقائي (4G+5G)', '03': '4G فقط', '08': '5G فقط', '01': '2G فقط', '02': '3G فقط'};
+const AN = {'0': 'مدمج (تلقائي)', '1': 'داخلي', '2': 'خارجي'};
 const kBg = Color(0xFF2E2E2E), kHead = Color(0xFF1B1B1B), kBar = Color(0xFF6E6E6E), kGreen = Color(0xFF39D353);
 
 List<int> bandsOf(String hex) {
@@ -228,7 +230,8 @@ class _H extends State<Home> {
   Set<int> sel = {};
   List<double> hR = [], hS = [];
   String nb = '3fffffff', msg = '', report = '', isp = '', model = 'ROUTER';
-  bool busy = false, remember = true, _poll = false;
+  bool busy = false, remember = true, _poll = false, awake = false;
+  String ant = '', antType = '';
   int tab = 0;
   Timer? timer;
 
@@ -248,6 +251,12 @@ class _H extends State<Home> {
     try {
       final h = await _st.read(key: 'host');
       final p = await _st.read(key: 'pw');
+      final aw = await _st.read(key: 'awake');
+      if (aw == '1') {
+        awake = true;
+        await WakelockPlus.enable();
+        if (mounted) setState(() {});
+      }
       if (h != null) host.text = h;
       if (p != null) {
         pw.text = p;
@@ -319,6 +328,7 @@ class _H extends State<Home> {
           isp = Huawei.tag(await h.get('net/current-plmn'), 'FullName');
         } catch (_) {}
         hw = h;
+        await readAntenna();
         await refresh(sync: true);
         final o = await _st.read(key: 'orig');
         if (o != null) {
@@ -337,6 +347,46 @@ class _H extends State<Home> {
           _poll = false;
         });
       });
+
+  Future<void> toggleAwake(bool v) async {
+    setState(() => awake = v);
+    try {
+      v ? await WakelockPlus.enable() : await WakelockPlus.disable();
+    } catch (_) {}
+    await _st.write(key: 'awake', value: v ? '1' : '0');
+  }
+
+  Future<void> readAntenna() async {
+    try {
+      final a = Huawei.tag(await hw!.get('device/antenna_set_type'), 'antennasettype');
+      final t = Huawei.tag(await hw!.get('device/antenna_type'), 'antennatype');
+      if (mounted) setState(() {
+        ant = a;
+        antType = t;
+      });
+    } catch (_) {}
+  }
+
+  Future<void> setAntenna(String v) async {
+    if (!await confirm('تغيير الانتينا إلى «${AN[v]}»؟ قد ينقطع الاتصال لحظات، وإذا ما فيه انتينا خارجية موصولة قد تضعف الإشارة.')) return;
+    await run(() async {
+      final r = await hw!.post('device/antenna_set_type', '<antennasettype>$v</antennasettype>');
+      final note = Huawei.err(r);
+      await Future.delayed(const Duration(seconds: 6));
+      for (var i = 0; i < 6; i++) {
+        try {
+          await readAntenna();
+          msg = ant == v
+              ? 'تم تغيير الانتينا وتأكّدت القراءة.'
+              : 'الراوتر لم يطبّق التغيير (رد الراوتر: ${note ?? 'OK'}، القيمة الحالية: $ant).';
+          return;
+        } catch (_) {
+          await Future.delayed(const Duration(seconds: 5));
+        }
+      }
+      msg = 'ما قدرت أتأكد من النتيجة. انتظر دقيقة وأعد المحاولة.';
+    });
+  }
 
   Future<void> logout() async {
     timer?.cancel();
@@ -382,7 +432,8 @@ class _H extends State<Home> {
   Future<void> doReport() => run(() async {
         final b = StringBuffer();
         for (final p in ['device/basic_information', 'device/information', 'device/signal',
-          'net/net-mode', 'net/net-mode-list', 'monitoring/status', 'wlan/basic-settings']) {
+          'net/net-mode', 'net/net-mode-list', 'monitoring/status', 'wlan/basic-settings',
+          'device/antenna_type', 'device/antenna_set_type']) {
           try {
             b.writeln('## $p\n${await hw!.get(p)}\n');
           } catch (e) {
@@ -470,6 +521,24 @@ class _H extends State<Home> {
           ])));
 
   List<Widget> routerTab() => [
+        card('الشاشة', [
+          SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: awake,
+              onChanged: toggleAwake,
+              title: const Text('إبقاء الشاشة شغّالة'),
+              subtitle: const Text('أثناء فتح التطبيق فقط')),
+        ]),
+        if (ant.isNotEmpty)
+          card('الانتينا', [
+            Text('الحالية: ${AN[ant] ?? 'قيمة $ant'}${antType.isEmpty ? '' : '  (المستخدمة فعليًا: $antType)'}'),
+            const SizedBox(height: 8),
+            Wrap(spacing: 8, children: [
+              for (final e in AN.entries)
+                ChoiceChip(label: Text(e.value), selected: ant == e.key,
+                    onSelected: busy ? null : (_) => setAntenna(e.key))
+            ]),
+          ]),
         card('الوضع الحالي', [Text(ML[nm['NetworkMode']] ?? nm['NetworkMode'] ?? '-')]),
         if (modes.isNotEmpty)
           card('وضع الشبكة', [
