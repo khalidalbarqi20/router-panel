@@ -194,6 +194,27 @@ class Huawei {
 }
 
 const ML = {'00': 'تلقائي (4G+5G)', '03': '4G فقط', '08': '5G فقط', '01': '2G فقط', '02': '3G فقط'};
+const kIcons = <String, IconData>{
+  'router': Icons.router,
+  'home': Icons.home,
+  'cell': Icons.cell_tower,
+  'work': Icons.work,
+  'car': Icons.directions_car,
+  'store': Icons.store,
+  'wifi': Icons.wifi,
+  'land': Icons.landscape,
+  'apt': Icons.apartment,
+  'cottage': Icons.cottage,
+};
+
+class Dev {
+  String id, name, host, pw, icon;
+  Dev(this.id, this.name, this.host, this.pw, this.icon);
+  Map<String, String> toJson() => {'id': id, 'name': name, 'host': host, 'pw': pw, 'icon': icon};
+  static Dev fromJson(Map j) => Dev('${j['id']}', '${j['name'] ?? ''}', '${j['host'] ?? ''}',
+      '${j['pw'] ?? ''}', '${j['icon'] ?? 'router'}');
+}
+
 const AN = {'0': 'مدمج (تلقائي)', '1': 'داخلي', '2': 'خارجي'};
 const kBg = Color(0xFF2E2E2E), kHead = Color(0xFF1B1B1B), kBar = Color(0xFF6E6E6E), kGreen = Color(0xFF39D353);
 
@@ -314,6 +335,11 @@ class _H extends State<Home> {
   Timer? coolT;
   String diag = '';
   bool showPw = false;
+  List<Dev> devs = [];
+  Dev? cur;
+  bool adding = false;
+  String coolHost = '', newIcon = 'router';
+  final dname = TextEditingController();
   int tab = 0;
   Timer? timer;
 
@@ -327,26 +353,36 @@ class _H extends State<Home> {
   void dispose() {
     timer?.cancel();
     coolT?.cancel();
+    dname.dispose();
     super.dispose();
   }
 
   Future<void> _load() async {
     try {
-      final h = await _st.read(key: 'host');
-      final p = await _st.read(key: 'pw');
       final aw = await _st.read(key: 'awake');
       if (aw == '1') {
         awake = true;
         await WakelockPlus.enable();
-        if (mounted) setState(() {});
       }
-      if (h != null) host.text = h;
-      if (p != null) {
-        pw.text = p;
-        await doLogin(auto: true);
+      final raw = await _st.read(key: 'devices');
+      if (raw != null) {
+        devs = [for (final j in jsonDecode(raw) as List) Dev.fromJson(j as Map)];
+      } else {
+        final h = await _st.read(key: 'host');
+        final p = await _st.read(key: 'pw');
+        if (h != null && p != null) {
+          devs = [Dev('${DateTime.now().millisecondsSinceEpoch}', '', h, p, 'router')];
+          await saveDevs();
+        }
       }
+      await _st.delete(key: 'pw');
+      await _st.delete(key: 'host');
+      if (mounted) setState(() {});
     } catch (_) {}
   }
+
+  Future<void> saveDevs() =>
+      _st.write(key: 'devices', value: jsonEncode([for (final d in devs) d.toJson()]));
 
   Future<void> run(Future<void> Function() f) async {
     setState(() {
@@ -356,7 +392,9 @@ class _H extends State<Home> {
     try {
       await f();
     } catch (e) {
-      msg = '$e';
+      msg = (e is SocketException || e is HttpException)
+          ? 'ما قدرت أتصل بالراوتر. تأكد أنك متصل بواي فاي هذا الراوتر وأن العنوان صحيح. ($e)'
+          : '$e';
     }
     if (mounted) setState(() => busy = false);
   }
@@ -391,32 +429,40 @@ class _H extends State<Home> {
     });
   }
 
-  Future<void> doLogin({bool auto = false}) => run(() async {
-        final h = Huawei(host.text.trim());
+  Future<void> doLogin({Dev? dev}) => run(() async {
+        final hostV = (dev?.host ?? host.text).trim();
+        final pwV = dev?.pw ?? pw.text;
+        final h = Huawei(hostV);
         try {
-          await h.login(pw.text);
+          await h.login(pwV);
           fails = 0;
         } on LoginError catch (e) {
           if (e.code == '108007') {
-            startCool();
+            startCool(hostV);
           } else if (['108006', '108002', '108001'].contains(e.code)) {
             fails++;
-            if (auto) {
-              await _st.delete(key: 'pw');
-              pw.clear();
-            }
           }
           throw LoginError(e.code, e.wait,
               fails > 0 ? '${e.text}\nمحاولات فاشلة متتالية من التطبيق: $fails' : e.text);
         }
-        _pw = pw.text;
-        if (remember) {
-          await _st.write(key: 'host', value: host.text.trim());
-          await _st.write(key: 'pw', value: pw.text);
-        } else {
-          await _st.delete(key: 'pw');
+        _pw = pwV;
+        Dev? d = dev;
+        if (d == null) {
+          for (final x in devs) {
+            if (x.host == hostV) d = x;
+          }
+          if (d == null && remember) {
+            d = Dev('${DateTime.now().millisecondsSinceEpoch}', dname.text.trim(), hostV, pwV, newIcon);
+            devs.add(d);
+          } else if (d != null && remember) {
+            d.pw = pwV;
+            if (dname.text.trim().isNotEmpty) d.name = dname.text.trim();
+          }
         }
+        cur = d;
         pw.clear();
+        dname.clear();
+        adding = false;
         final l = await h.get('net/net-mode-list');
         modes = RegExp(r'<Access>(\w+)</Access>').allMatches(l).map((m) => m[1]!).toList();
         sup = ({for (final m in RegExp(r'BC(\d+)').allMatches(l)) int.parse(m[1]!)}.toList())..sort();
@@ -425,15 +471,21 @@ class _H extends State<Home> {
           model = Huawei.tag(await h.get('device/basic_information'), 'devicename');
           isp = Huawei.tag(await h.get('net/current-plmn'), 'FullName');
         } catch (_) {}
+        final cd = cur;
+        if (cd != null) {
+          if (cd.name.isEmpty) cd.name = model.isEmpty ? hostV : model;
+          if (devs.contains(cd)) await saveDevs();
+        }
+        final okey = 'orig_${cd?.id ?? hostV}';
         hw = h;
         await readAntenna();
         await refresh(sync: true);
-        final o = await _st.read(key: 'orig');
+        final o = await _st.read(key: okey);
         if (o != null) {
           orig = Map<String, String>.from(jsonDecode(o));
         } else {
           orig = Map.of(nm);
-          await _st.write(key: 'orig', value: jsonEncode(orig));
+          await _st.write(key: okey, value: jsonEncode(orig));
         }
         timer?.cancel();
         timer = Timer.periodic(const Duration(seconds: 3), (_) async {
@@ -446,8 +498,9 @@ class _H extends State<Home> {
         });
       });
 
-  void startCool() {
+  void startCool(String h) {
     coolT?.cancel();
+    coolHost = h;
     cool = 120;
     coolT = Timer.periodic(const Duration(seconds: 1), (t) {
       if (!mounted) {
@@ -506,11 +559,71 @@ class _H extends State<Home> {
 
   Future<void> logout() async {
     timer?.cancel();
-    await _st.delete(key: 'pw');
     setState(() {
       hw = null;
+      cur = null;
+      adding = false;
       msg = '';
+      tab = 0;
+      sig = {};
+      nm = {};
+      tr = {};
+      hR = [];
+      hS = [];
+      sel = {};
+      modes = [];
+      sup = [];
+      ant = '';
+      antType = '';
+      report = '';
+      orig = null;
     });
+  }
+
+  Future<void> delDev(Dev d) async {
+    if (!await confirm('حذف «${d.name.isEmpty ? d.host : d.name}» من القائمة؟ تنحذف كلمة مروره المحفوظة.')) return;
+    devs.remove(d);
+    await _st.delete(key: 'orig_${d.id}');
+    await saveDevs();
+    if (mounted) setState(() {});
+  }
+
+  Future<void> editDev(Dev d) async {
+    final n = TextEditingController(text: d.name);
+    final hh = TextEditingController(text: d.host);
+    final pp = TextEditingController(text: d.pw);
+    var ic = d.icon;
+    final ok = await showDialog<bool>(
+            context: context,
+            builder: (c) => StatefulBuilder(
+                builder: (c, set) => AlertDialog(
+                        title: const Text('تعديل الجهاز'),
+                        content: SingleChildScrollView(
+                            child: Column(mainAxisSize: MainAxisSize.min, children: [
+                          TextField(controller: n, decoration: const InputDecoration(labelText: 'اسم الجهاز')),
+                          TextField(controller: hh, textDirection: TextDirection.ltr,
+                              decoration: const InputDecoration(labelText: 'عنوان الراوتر')),
+                          TextField(controller: pp, obscureText: true, textDirection: TextDirection.ltr,
+                              decoration: const InputDecoration(labelText: 'كلمة المرور')),
+                          const SizedBox(height: 12),
+                          Wrap(spacing: 6, children: [
+                            for (final e in kIcons.entries)
+                              ChoiceChip(label: Icon(e.value, size: 20), selected: ic == e.key,
+                                  onSelected: (_) => set(() => ic = e.key))
+                          ]),
+                        ])),
+                        actions: [
+                          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('إلغاء')),
+                          FilledButton(onPressed: () => Navigator.pop(c, true), child: const Text('حفظ')),
+                        ]))) ??
+        false;
+    if (!ok) return;
+    d.name = n.text.trim();
+    d.host = hh.text.trim();
+    d.pw = pp.text;
+    d.icon = ic;
+    await saveDevs();
+    if (mounted) setState(() {});
   }
 
   Future<void> change(String mask, String mode) => run(() async {
@@ -722,11 +835,56 @@ class _H extends State<Home> {
                 Text(t, style: TextStyle(fontSize: 11, color: onTap == null && tab == i ? Colors.black : Colors.white70)),
               ]))));
 
+  Widget devicesView() => ListView(padding: const EdgeInsets.all(14), children: [
+        const SizedBox(height: 30),
+        const Text('لوحة الراوتر', textAlign: TextAlign.center, style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: kGreen)),
+        const SizedBox(height: 6),
+        const Text('اختر الجهاز للدخول', textAlign: TextAlign.center, style: TextStyle(color: Colors.white54)),
+        const SizedBox(height: 18),
+        for (final d in devs)
+          Card(
+              child: ListTile(
+                  leading: CircleAvatar(backgroundColor: kGreen, child: Icon(kIcons[d.icon] ?? Icons.router, color: Colors.black)),
+                  title: Text(d.name.isEmpty ? d.host : d.name),
+                  subtitle: Text(cool > 0 && coolHost == d.host
+                      ? 'مقفول مؤقتًا: ${cool ~/ 60}:${(cool % 60).toString().padLeft(2, '0')}'
+                      : d.host),
+                  onTap: busy || (cool > 0 && coolHost == d.host) ? null : () => doLogin(dev: d),
+                  trailing: PopupMenuButton<String>(
+                      onSelected: (v) {
+                        if (v == 'e') {
+                          editDev(d);
+                        } else {
+                          delDev(d);
+                        }
+                      },
+                      itemBuilder: (c) => const [
+                            PopupMenuItem(value: 'e', child: Text('تعديل')),
+                            PopupMenuItem(value: 'd', child: Text('حذف')),
+                          ]))),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+            onPressed: busy ? null : () => setState(() => adding = true),
+            icon: const Icon(Icons.add),
+            label: const Text('إضافة جهاز')),
+        if (busy) const Padding(padding: EdgeInsets.all(12), child: LinearProgressIndicator()),
+        if (msg.isNotEmpty) Padding(padding: const EdgeInsets.all(10), child: SelectableText(msg)),
+      ]);
+
   Widget loginView() => ListView(padding: const EdgeInsets.all(14), children: [
+        if (devs.isNotEmpty)
+          Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                  onPressed: busy ? null : () => setState(() => adding = false),
+                  icon: const Icon(Icons.arrow_back),
+                  label: const Text('رجوع للأجهزة'))),
         const SizedBox(height: 40),
         const Text('لوحة الراوتر', textAlign: TextAlign.center, style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: kGreen)),
         const SizedBox(height: 24),
         TextField(controller: host, textDirection: TextDirection.ltr, decoration: const InputDecoration(labelText: 'عنوان الراوتر')),
+        const SizedBox(height: 10),
+        TextField(controller: dname, decoration: const InputDecoration(labelText: 'اسم الجهاز (اختياري)')),
         const SizedBox(height: 10),
         TextField(controller: pw, obscureText: !showPw, textDirection: TextDirection.ltr,
             decoration: InputDecoration(
@@ -737,11 +895,19 @@ class _H extends State<Home> {
         CheckboxListTile(
             value: remember,
             onChanged: (v) => setState(() => remember = v ?? true),
-            title: const Text('حفظ كلمة المرور على هذا الجهاز (مشفّرة)'),
+            title: const Text('حفظ الجهاز وكلمة مروره (مشفّرة)'),
             controlAffinity: ListTileControlAffinity.leading),
+        Wrap(spacing: 6, children: [
+          for (final e in kIcons.entries)
+            ChoiceChip(label: Icon(e.value, size: 20), selected: newIcon == e.key,
+                onSelected: (_) => setState(() => newIcon = e.key))
+        ]),
+        const SizedBox(height: 10),
         FilledButton(
-            onPressed: busy || cool > 0 ? null : () => doLogin(),
-            child: Text(cool > 0 ? 'انتظر ${cool ~/ 60}:${(cool % 60).toString().padLeft(2, '0')}' : 'دخول')),
+            onPressed: busy || (cool > 0 && coolHost == host.text.trim()) ? null : () => doLogin(),
+            child: Text(cool > 0 && coolHost == host.text.trim()
+                ? 'انتظر ${cool ~/ 60}:${(cool % 60).toString().padLeft(2, '0')}'
+                : 'دخول')),
         if (busy) const Padding(padding: EdgeInsets.all(12), child: LinearProgressIndicator()),
         if (msg.isNotEmpty) Padding(padding: const EdgeInsets.all(10), child: SelectableText(msg)),
         const SizedBox(height: 10),
@@ -762,7 +928,7 @@ class _H extends State<Home> {
 
   @override
   Widget build(BuildContext c) {
-    if (hw == null) return Scaffold(body: SafeArea(child: loginView()));
+    if (hw == null) return Scaffold(body: SafeArea(child: (devs.isEmpty || adding) ? loginView() : devicesView()));
     final has5 = (sig['nrrsrp'] ?? '').isNotEmpty && sig['nrrsrp'] != 'None';
     return Scaffold(
         body: SafeArea(
@@ -771,10 +937,14 @@ class _H extends State<Home> {
           color: kHead,
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           child: Row(children: [
-            Text(model.isEmpty ? 'ROUTER' : model, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+            Icon(kIcons[cur?.icon] ?? Icons.router, color: kGreen),
+            const SizedBox(width: 8),
+            Flexible(
+                child: Text((cur != null && cur!.name.isNotEmpty) ? cur!.name : (model.isEmpty ? 'ROUTER' : model),
+                    overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold))),
             const Spacer(),
             Text(has5 ? '5G' : 'LTE', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: kGreen)),
-            IconButton(onPressed: logout, icon: const Icon(Icons.logout), tooltip: 'خروج ونسيان كلمة المرور'),
+            IconButton(onPressed: logout, icon: const Icon(Icons.logout), tooltip: 'رجوع لقائمة الأجهزة'),
           ])),
       Container(height: 3, color: kGreen),
       Row(children: [
