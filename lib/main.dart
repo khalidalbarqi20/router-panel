@@ -49,10 +49,26 @@ class Huawei {
   final HttpClient _h = HttpClient()..connectionTimeout = const Duration(seconds: 8);
   final Map<String, String> _ck = {};
   String _tok = '';
-  Huawei(this.host);
+  Huawei(this.host) {
+    _h.userAgent = 'Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36';
+  }
 
   Future<Resp> _req(String m, String p, {String? body}) async {
+    for (var i = 0;; i++) {
+      try {
+        return await _req1(m, p, body: body);
+      } on HttpException {
+        if (m != 'GET' || i >= 2) rethrow;
+      } on SocketException {
+        if (m != 'GET' || i >= 2) rethrow;
+      }
+      await Future.delayed(const Duration(milliseconds: 700));
+    }
+  }
+
+  Future<Resp> _req1(String m, String p, {String? body}) async {
     final r = await _h.openUrl(m, Uri.parse('http://$host$p'));
+    r.persistentConnection = false;
     if (_ck.isNotEmpty) {
       r.headers.set('Cookie', _ck.entries.map((e) => '${e.key}=${e.value}').join('; '));
     }
@@ -68,6 +84,37 @@ class Huawei {
       if (i > 0) _ck[kv.substring(0, i).trim()] = kv.substring(i + 1);
     }
     return Resp(await utf8.decodeStream(s), s.headers);
+  }
+
+  Future<String> probe() async {
+    final b = StringBuffer();
+    String cut(String x) => x.length > 700 ? x.substring(0, 700) : x;
+    String hide(String x) => x.replaceAllMapped(
+        RegExp(r'<(\w*(?:imei|imsi|serial|mac|iccid|msisdn|phone|number|ssid)\w*)>[^<]+</', caseSensitive: false),
+        (m) => '<${m[1]}>***</');
+    for (final path in ['/api/user/state-login', '/api/device/basic_information', '/api/user/hilink_login']) {
+      try {
+        b.writeln('## GET $path\n${cut(hide((await _req('GET', path)).body))}\n');
+      } catch (e) {
+        b.writeln('## GET $path خطأ: $e\n');
+      }
+    }
+    try {
+      _ck.clear();
+      await _req('GET', '/');
+      final tk = tag((await _req('GET', '/api/webserver/token')).body, 'token');
+      b.writeln('## token طوله: ${tk.length}\n');
+      _tok = tk.length > 32 ? tk.substring(32) : tk;
+      final rnd = Random.secure();
+      final cn = List.generate(64, (_) => rnd.nextInt(16).toRadixString(16)).join();
+      final c = await _req('POST', '/api/user/challenge_login',
+          body: '<?xml version="1.0" encoding="UTF-8"?><request><username>admin</username>'
+              '<firstnonce>$cn</firstnonce><mode>1</mode></request>');
+      b.writeln('## POST challenge_login\n${cut(c.body)}\n');
+    } catch (e) {
+      b.writeln('## token/challenge خطأ: $e\n');
+    }
+    return b.toString();
   }
 
   static String tag(String x, String t) => RegExp('<$t>([^<]*)</$t>').firstMatch(x)?[1] ?? '';
@@ -265,6 +312,8 @@ class _H extends State<Home> {
   String ant = '', antType = '';
   int fails = 0, cool = 0;
   Timer? coolT;
+  String diag = '';
+  bool showPw = false;
   int tab = 0;
   Timer? timer;
 
@@ -679,8 +728,12 @@ class _H extends State<Home> {
         const SizedBox(height: 24),
         TextField(controller: host, textDirection: TextDirection.ltr, decoration: const InputDecoration(labelText: 'عنوان الراوتر')),
         const SizedBox(height: 10),
-        TextField(controller: pw, obscureText: true, textDirection: TextDirection.ltr,
-            decoration: const InputDecoration(labelText: 'كلمة مرور admin')),
+        TextField(controller: pw, obscureText: !showPw, textDirection: TextDirection.ltr,
+            decoration: InputDecoration(
+                labelText: 'كلمة مرور admin',
+                suffixIcon: IconButton(
+                    icon: Icon(showPw ? Icons.visibility_off : Icons.visibility),
+                    onPressed: () => setState(() => showPw = !showPw)))),
         CheckboxListTile(
             value: remember,
             onChanged: (v) => setState(() => remember = v ?? true),
@@ -691,6 +744,20 @@ class _H extends State<Home> {
             child: Text(cool > 0 ? 'انتظر ${cool ~/ 60}:${(cool % 60).toString().padLeft(2, '0')}' : 'دخول')),
         if (busy) const Padding(padding: EdgeInsets.all(12), child: LinearProgressIndicator()),
         if (msg.isNotEmpty) Padding(padding: const EdgeInsets.all(10), child: SelectableText(msg)),
+        const SizedBox(height: 10),
+        OutlinedButton(
+            onPressed: busy
+                ? null
+                : () => run(() async {
+                      diag = await Huawei(host.text.trim()).probe();
+                    }),
+            child: const Text('فحص الراوتر (بدون كلمة مرور)')),
+        if (diag.isNotEmpty) ...[
+          OutlinedButton(
+              onPressed: () => Clipboard.setData(ClipboardData(text: diag)),
+              child: const Text('نسخ نتيجة الفحص')),
+          SelectableText(diag, textDirection: TextDirection.ltr, style: const TextStyle(fontSize: 11, fontFamily: 'monospace')),
+        ],
       ]);
 
   @override
