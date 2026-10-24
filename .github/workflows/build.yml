@@ -15,6 +15,9 @@ jobs:
           rm -f app/lib/main.dart
           cp -r lib/. app/lib/
           M=app/android/app/src/main/AndroidManifest.xml
+                    for G in app/android/app/build.gradle app/android/app/build.gradle.kts; do
+            [ -f "$G" ] && sed -i -E 's/minSdk = flutter.minSdkVersion/minSdk = 24/; s/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/' "$G" || true
+          done
           sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET"/><application|' $M
           sed -i 's|<application|<application android:usesCleartextTraffic="true"|' $M
       - name: Build
