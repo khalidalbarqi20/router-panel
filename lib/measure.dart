@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:math';
 import 'dart:typed_data';
 
 /// إحصاءات سلسلة قياسات: القيم الناجحة بالترتيب الزمني + عدد المرسَل.
@@ -184,14 +183,64 @@ Future<int> loadUp(Duration d, bool Function() stop) async {
   return bytes;
 }
 
-/// دالة مساعدة للحد من max/min غير المستخدمة.
-double clampD(double v, double lo, double hi) => max(lo, min(hi, v));
+/// مصادر ملفات اختبار التنزيل (يُجرَّب الأول ثم البدائل حتى يشتغل واحد).
+class DownSrc {
+  final String name, url;
+  const DownSrc(this.name, this.url);
+}
 
-/// نتيجة قياس سرعة التنزيل: السرعة بالميجابت/ث وإجمالي البايتات المستهلكة.
+const List<DownSrc> kDownSrcs = <DownSrc>[
+  DownSrc('Cloudflare', 'https://speed.cloudflare.com/__down?bytes=25000000'),
+  DownSrc('CacheFly', 'https://cachefly.cachefly.net/100mb.test'),
+  DownSrc('OVH', 'https://proof.ovh.net/files/100Mb.dat'),
+  DownSrc('ThinkBroadband', 'http://ipv4.download.thinkbroadband.com/100MB.zip'),
+];
+
+/// الرابط المعتمد بعد اختيار المصدر.
+String gDownUrl = 'https://speed.cloudflare.com/__down?bytes=25000000';
+
+/// يجرّب رابطًا لمدة ثوانٍ قليلة: يرجع OK إذا نزل بيانات كافية، وإلا سبب الفشل.
+Future<String> tryDownUrl(String url, bool Function() stop) async {
+  final c = HttpClient()..connectionTimeout = const Duration(seconds: 6);
+  var bytes = 0;
+  try {
+    final req = await c.getUrl(Uri.parse(url)).timeout(const Duration(seconds: 8));
+    final res = await req.close().timeout(const Duration(seconds: 8));
+    if (res.statusCode != 200) return 'HTTP ${res.statusCode}';
+    final sw = Stopwatch()..start();
+    await for (final chunk in res) {
+      bytes += chunk.length;
+      if (sw.elapsedMilliseconds > 3500 || stop()) break;
+    }
+    return bytes >= 150000 ? 'OK' : 'بيانات قليلة ($bytes بايت)';
+  } catch (e) {
+    return 'خطأ: ${e.runtimeType}';
+  } finally {
+    c.close(force: true);
+  }
+}
+
+/// يختار أول مصدر يشتغل ويحفظه في gDownUrl. يرجع اسمه، أو نصًا فارغًا إن فشلت كلها.
+Future<String> pickDownSource(void Function(String) log, bool Function() stop) async {
+  for (final s in kDownSrcs) {
+    if (stop()) break;
+    final r = await tryDownUrl(s.url, stop);
+    if (r == 'OK') {
+      gDownUrl = s.url;
+      log('مصدر التنزيل: ${s.name}');
+      return s.name;
+    }
+    log('${s.name}: $r');
+  }
+  return '';
+}
+
+/// نتيجة قياس سرعة التنزيل: السرعة بالميجابت/ث وإجمالي البايتات وسبب الفشل إن وُجد.
 class Tput {
   final double mbps;
   final int bytes;
-  Tput(this.mbps, this.bytes);
+  final String note;
+  Tput(this.mbps, this.bytes, [this.note = '']);
 }
 
 /// يقيس سرعة التنزيل بعدة اتصالات متوازية، ويتجاهل أول [warm] ثانية (بداية بطيئة).
@@ -202,13 +251,18 @@ Future<Tput> measureDown(bool Function() stop, {int conns = 4, int secs = 8, int
   var total = 0;
   var atWarm = -1;
   var warmMs = 0.0;
+  var note = '';
 
   Future<void> worker() async {
     final c = HttpClient()..connectionTimeout = const Duration(seconds: 6);
     try {
       while (sw.elapsed < end && !stop()) {
-        final req = await c.getUrl(Uri.parse('https://speed.cloudflare.com/__down?bytes=100000000'));
+        final req = await c.getUrl(Uri.parse(gDownUrl));
         final res = await req.close();
+        if (res.statusCode != 200) {
+          if (note.isEmpty) note = 'HTTP ${res.statusCode}';
+          break;
+        }
         await for (final chunk in res) {
           total += chunk.length;
           if (atWarm < 0 && sw.elapsed >= warmD) {
@@ -218,7 +272,8 @@ Future<Tput> measureDown(bool Function() stop, {int conns = 4, int secs = 8, int
           if (sw.elapsed >= end || stop()) break;
         }
       }
-    } catch (_) {
+    } catch (e) {
+      if (note.isEmpty) note = 'خطأ: ${e.runtimeType}';
     } finally {
       c.close(force: true);
     }
@@ -233,5 +288,5 @@ Future<Tput> measureDown(bool Function() stop, {int conns = 4, int secs = 8, int
   } else if (total > 0 && totalMs > 0) {
     mbps = total * 8 / (totalMs * 1000.0);
   }
-  return Tput(mbps, total);
+  return Tput(mbps, total, note);
 }
