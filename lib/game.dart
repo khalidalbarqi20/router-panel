@@ -1,9 +1,9 @@
-import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'measure.dart';
+import 'probe.dart';
 
 const Color _green = Color(0xFF39D353);
 
@@ -15,6 +15,7 @@ class GameCtl {
   final String Function() curMask;
   final String Function() curMode;
   final Future<bool> Function(String mask, String mode) apply;
+  final Future<ProbeRes> Function(String mask, String mode) probe;
   final bool keepAwake;
   GameCtl({
     required this.routerHost,
@@ -23,6 +24,7 @@ class GameCtl {
     required this.curMask,
     required this.curMode,
     required this.apply,
+    required this.probe,
     required this.keepAwake,
   });
 }
@@ -107,11 +109,13 @@ class GamePage extends StatefulWidget {
 }
 
 class _GameState extends State<GamePage> {
-  bool running = false, cancel = false, ext = false, done = false, applying = false;
+  bool running = false, cancel = false, done = false, applying = false;
   String step = '', advice = '', recSub = '', bloatTxt = '', warn = '', applyMsg = '';
   int total = 0, doneN = 0;
   final List<String> logs = <String>[];
   List<Cand> ranked = <Cand>[];
+  List<Cand> _cands = <Cand>[];
+  List<BandProbe> probes = <BandProbe>[];
   Cand? best;
   String _curMask = '', _curMode = '';
 
@@ -128,15 +132,11 @@ class _GameState extends State<GamePage> {
     });
   }
 
-  List<Cand> _gen(bool extended) {
-    final ctl = widget.ctl;
-    final baseMask = ctl.curMask();
-    final baseMode = ctl.curMode();
-    final bands = extended ? List<int>.from(ctl.sup) : _bandsOf(baseMask);
-    final ms = <String>[for (final m in const ['00', '03']) if (ctl.modes.contains(m)) m];
+  List<Cand> _gen(List<int> work, String baseMask, String baseMode) {
+    final ms = <String>[for (final m in const ['00', '03']) if (widget.ctl.modes.contains(m)) m];
     final out = <Cand>[];
     for (final m in ms) {
-      for (final b in bands) {
+      for (final b in work) {
         final mask = _maskOf(<int>[b]);
         if (mask == baseMask && m == baseMode) continue;
         out.add(Cand(mask, m, '${m == '03' ? '4G فقط' : 'تلقائي'} · B$b'));
@@ -200,15 +200,16 @@ class _GameState extends State<GamePage> {
       _set(() => step = 'ما قدرت أقرأ نطاقات الراوتر. ارجع وادخل من جديد.');
       return;
     }
-    final cands = _gen(ext);
-    final mins = ((cands.length + 2) * 55 / 60).ceil();
+    final mins = (ctl.sup.length * 25 / 60).ceil() + 8;
     final ok = await showDialog<bool>(
           context: context,
           builder: (c) => AlertDialog(
             title: const Text('بدء الفحص'),
             content: Text(
-                'سيجرّب ${cands.length} إعدادًا، ويستغرق حوالي $mins دقيقة.\n\n'
-                '• الإنترنت ينقطع 20 إلى 45 ثانية عند كل تبديل، وعن كل الأجهزة (حتى الكمبيوتر).\n'
+                'المرحلة 1: فحص سريع لكل النطاقات المدعومة (${ctl.sup.length}) لمعرفة أيها يشتغل.\n'
+                'المرحلة 2: قياس البنق والتذبذب والفقد للنطاقات الشغّالة فقط.\n\n'
+                'المدة المتوقعة: من $mins إلى ${mins + 10} دقيقة.\n\n'
+                '• الإنترنت ينقطع عند كل تبديل، وعن كل الأجهزة (حتى الكمبيوتر).\n'
                 '• لا تقفل التطبيق ولا تبتعد عن الراوتر.\n'
                 '• في النهاية يرجع الراوتر لإعدادك الحالي، ولا يتغير شيء إلا إذا ضغطت «طبّق».'),
             actions: [
@@ -224,6 +225,7 @@ class _GameState extends State<GamePage> {
       cancel = false;
       done = false;
       ranked = <Cand>[];
+      probes = <BandProbe>[];
       best = null;
       advice = '';
       recSub = '';
@@ -231,7 +233,7 @@ class _GameState extends State<GamePage> {
       warn = '';
       applyMsg = '';
       logs.clear();
-      total = cands.length + 3;
+      total = ctl.sup.length + 4;
       doneN = 0;
       step = 'تجهيز';
     });
@@ -239,7 +241,7 @@ class _GameState extends State<GamePage> {
       await WakelockPlus.enable();
     } catch (_) {}
     try {
-      await _scan(cands, baseMask, baseMode);
+      await _scan(baseMask, baseMode);
     } catch (e) {
       log('خطأ غير متوقع: $e');
     }
@@ -255,7 +257,7 @@ class _GameState extends State<GamePage> {
     });
   }
 
-  Future<void> _scan(List<Cand> cands, String baseMask, String baseMode) async {
+  Future<void> _scan(String baseMask, String baseMode) async {
     final ctl = widget.ctl;
     _curMask = baseMask;
     _curMode = baseMode;
@@ -290,7 +292,24 @@ class _GameState extends State<GamePage> {
       return;
     }
 
-    var touched = false;
+    _set(() => step = 'المرحلة 1: فحص الترددات السريع');
+    final pr = await probeAll(
+      bands: ctl.sup,
+      probe: ctl.probe,
+      stop: stop,
+      log: log,
+      step: (s) => _set(() => step = s),
+      tick: () => _set(() => doneN++),
+    );
+    var touched = pr.isNotEmpty;
+    _curMask = '';
+    final work = workingBands(pr);
+    _set(() => probes = pr);
+    log(work.isEmpty ? 'ما لقيت نطاقًا شغّالًا للتعمّق.' : 'النطاقات الشغّالة للتعمّق: ${work.map((b) => 'B$b').join(' ')}');
+    final cands = _gen(work, baseMask, baseMode);
+    _cands = cands;
+    _set(() => total = doneN + cands.length + 2);
+
     var fails = 0;
     for (var i = 0; i < cands.length; i++) {
       if (cancel) break;
@@ -305,7 +324,7 @@ class _GameState extends State<GamePage> {
           c.note = 'الراوتر لم يطبّق هذا الإعداد';
           fails++;
           log('لم يتأكد تطبيق ${c.label}');
-          if (fails >= 2) {
+          if (fails >= 3) {
             log('فشل متكرر، أوقفت الفحص.');
             break;
           }
@@ -371,7 +390,7 @@ class _GameState extends State<GamePage> {
       _set(() => doneN++);
     }
 
-    _finish(base, cands);
+    _finish(base, _cands);
   }
 
   void _finish(Cand base, List<Cand> cands) {
@@ -493,16 +512,8 @@ class _GameState extends State<GamePage> {
             ]),
             const SizedBox(height: 8),
             const Text(
-                'يقيس البنق والتذبذب وفقد الحزم إلى سيرفرات فورتنايت الرسمية (البحرين ومومباي) عبر كل إعداد، '
-                'ثم يقترح الأفضل. القياس من جوالك عبر الواي فاي، ويطرح بنق الراوتر من النتيجة.',
+                'أولًا يفحص بسرعة أي النطاقات تشتغل عندك، ثم يقيس البنق والتذبذب وفقد الحزم لسيرفرات فورتنايت الرسمية (البحرين ومومباي) عبر الشغّالة فقط، ثم يقترح الأفضل. القياس من جوالك عبر الواي فاي، ويطرح بنق الراوتر من النتيجة.',
                 style: TextStyle(color: Colors.white70)),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              value: ext,
-              onChanged: running ? null : (v) => setState(() => ext = v),
-              title: const Text('فحص موسّع'),
-              subtitle: const Text('يجرّب كل النطاقات المدعومة، وليس المفعّلة عندك فقط. أطول بكثير.'),
-            ),
             Wrap(spacing: 8, children: [
               FilledButton(onPressed: running || applying ? null : start, child: const Text('ابدأ الفحص')),
               if (running)
@@ -536,6 +547,15 @@ class _GameState extends State<GamePage> {
                 Text(applyMsg),
               ],
             ]),
+            if (probes.isNotEmpty)
+              _card('الترددات الشغّالة (فحص سريع)', [
+                for (final p in probes)
+                  Text(
+                      p.res.ok
+                          ? '✓ B${p.band}: RSRP ${p.res.rsrp?.toStringAsFixed(0) ?? '-'} · SINR ${p.res.sinr?.toStringAsFixed(0) ?? '-'}'
+                          : '✗ B${p.band}: ${p.res.note}',
+                      style: TextStyle(fontSize: 13, color: p.res.ok ? _green : Colors.white54)),
+              ]),
             if (recSub.isNotEmpty) _card('سيرفرات فورتنايت', [Text(recSub)]),
             if (bloatTxt.isNotEmpty)
               _card('الأداء تحت الحمل', [
