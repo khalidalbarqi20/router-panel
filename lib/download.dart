@@ -204,7 +204,7 @@ class _DownState extends State<DownloadPage> {
     );
     var touched = pr.isNotEmpty;
     _curMask = '';
-    final work = workingBands(pr);
+    final work = workingBands(pr, max: 8);
     _set(() => probes = pr);
     log(work.isEmpty ? 'ما لقيت نطاقًا شغّالًا للتعمّق.' : 'النطاقات الشغّالة للتعمّق: ${work.map((b) => 'B$b').join(' ')}');
     final cands = _gen(work, baseMask, baseMode);

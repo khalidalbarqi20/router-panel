@@ -726,7 +726,7 @@ class _H extends State<Home> {
     await Future.delayed(const Duration(seconds: 5));
     var good = 0;
     var lastBand = '';
-    while (sw.elapsed < const Duration(seconds: 40)) {
+    while (sw.elapsed < const Duration(seconds: 55)) {
       try {
         final n = Huawei.kv(await hw!.get('net/net-mode'));
         final s = Huawei.kv(await hw!.get('device/signal'));
@@ -735,11 +735,11 @@ class _H extends State<Home> {
         try {
           connected = Huawei.kv(await hw!.get('monitoring/status'))['ConnectionStatus'] == '901';
         } catch (_) {}
-        final b = int.tryParse(s['band'] ?? '');
+        final b = num_(s['band'])?.toInt();
         final r = num_(s['rsrp']);
         lastBand = b == null ? '' : 'B$b';
-        final applied = norm(n['LTEBand'] ?? '') == mask && n['NetworkMode'] == mode;
-        if (applied && connected && b != null && want.contains(b) && r != null) {
+        final applied = norm(n['LTEBand'] ?? '') == norm(mask) && n['NetworkMode'] == mode;
+        if (applied && connected && b != null && want.contains(b)) {
           good++;
           if (good >= 2) {
             return ProbeRes(true, true, 'B$b', r, num_(s['sinr']), sw.elapsed.inSeconds, '');
@@ -765,7 +765,7 @@ class _H extends State<Home> {
         curMode: () => nm['NetworkMode'] ?? '00',
         apply: applyQuiet,
         probe: probeQuiet,
-        keepAwake: awake,,
+        keepAwake: awake,
       );
 
   Future<void> openGame() async {

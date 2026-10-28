@@ -244,6 +244,7 @@ class Tput {
 }
 
 /// يقيس سرعة التنزيل بعدة اتصالات متوازية، ويتجاهل أول [warm] ثانية (بداية بطيئة).
+/// كل اتصال يبدأ متأخرًا قليلًا، ولو فشل المصدر (HTTP غير 200 أو انقطاع) ينتقل للمصدر التالي.
 Future<Tput> measureDown(bool Function() stop, {int conns = 4, int secs = 8, int warm = 2}) async {
   final sw = Stopwatch()..start();
   final end = Duration(seconds: secs);
@@ -252,34 +253,52 @@ Future<Tput> measureDown(bool Function() stop, {int conns = 4, int secs = 8, int
   var atWarm = -1;
   var warmMs = 0.0;
   var note = '';
+  final urls = <String>[gDownUrl, for (final s in kDownSrcs) if (s.url != gDownUrl) s.url];
 
-  Future<void> worker() async {
+  Future<void> worker(int id) async {
+    if (id > 0) await Future<void>.delayed(Duration(milliseconds: 300 * id));
     final c = HttpClient()..connectionTimeout = const Duration(seconds: 6);
+    var ui = 0, fails = 0;
     try {
-      while (sw.elapsed < end && !stop()) {
-        final req = await c.getUrl(Uri.parse(gDownUrl));
-        final res = await req.close();
-        if (res.statusCode != 200) {
-          if (note.isEmpty) note = 'HTTP ${res.statusCode}';
-          break;
-        }
-        await for (final chunk in res) {
-          total += chunk.length;
-          if (atWarm < 0 && sw.elapsed >= warmD) {
-            atWarm = total;
-            warmMs = sw.elapsedMicroseconds / 1000.0;
+      while (sw.elapsed < end && !stop() && fails < 4) {
+        final url = urls[ui % urls.length];
+        var got = 0;
+        try {
+          final req = await c.getUrl(Uri.parse(url)).timeout(const Duration(seconds: 8));
+          final res = await req.close().timeout(const Duration(seconds: 8));
+          if (res.statusCode != 200) {
+            if (note.isEmpty) note = 'HTTP ${res.statusCode}';
+            fails++;
+            ui++;
+            await Future<void>.delayed(const Duration(milliseconds: 500));
+            continue;
           }
-          if (sw.elapsed >= end || stop()) break;
+          await for (final chunk in res.timeout(const Duration(seconds: 6))) {
+            got += chunk.length;
+            total += chunk.length;
+            if (atWarm < 0 && sw.elapsed >= warmD) {
+              atWarm = total;
+              warmMs = sw.elapsedMicroseconds / 1000.0;
+            }
+            if (sw.elapsed >= end || stop()) break;
+          }
+        } catch (e) {
+          if (note.isEmpty) note = 'خطأ: ${e.runtimeType}';
+        }
+        if (got > 0) {
+          fails = 0;
+        } else {
+          fails++;
+          ui++;
+          await Future<void>.delayed(const Duration(milliseconds: 500));
         }
       }
-    } catch (e) {
-      if (note.isEmpty) note = 'خطأ: ${e.runtimeType}';
     } finally {
       c.close(force: true);
     }
   }
 
-  await Future.wait(<Future<void>>[for (var i = 0; i < conns; i++) worker()]);
+  await Future.wait(<Future<void>>[for (var i = 0; i < conns; i++) worker(i)]);
   sw.stop();
   final totalMs = sw.elapsedMicroseconds / 1000.0;
   var mbps = 0.0;
