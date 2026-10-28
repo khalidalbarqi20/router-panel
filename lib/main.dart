@@ -7,6 +7,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'game.dart';
+import 'modes.dart';
 
 const _st = FlutterSecureStorage();
 
@@ -675,6 +677,57 @@ class _H extends State<Home> {
             (m) => '<${m[1]}>***</');
       });
 
+  // ---------- وضع الألعاب ----------
+  /// يطبّق النطاق والوضع ويتأكد بالقراءة (بدون واجهة، تستعمله صفحة الألعاب).
+  Future<bool> applyQuiet(String mask, String mode) async {
+    final body = '<NetworkMode>$mode</NetworkMode><NetworkBand>$nb</NetworkBand><LTEBand>$mask</LTEBand>';
+    try {
+      await hw!.login(_pw!);
+    } catch (_) {}
+    try {
+      await hw!.post('net/net-mode', body);
+    } catch (_) {
+      try {
+        await hw!.login(_pw!);
+        await hw!.post('net/net-mode', body);
+      } catch (_) {}
+    }
+    await Future.delayed(const Duration(seconds: 20));
+    for (var i = 0; i < 8; i++) {
+      try {
+        await hw!.login(_pw!);
+        await refresh(sync: true);
+        return nm['NetworkMode'] == mode && norm(nm['LTEBand'] ?? '') == mask;
+      } catch (_) {
+        await Future.delayed(const Duration(seconds: 8));
+      }
+    }
+    return false;
+  }
+
+  GameCtl gameCtl() => GameCtl(
+        routerHost: hw!.host,
+        sup: List<int>.from(sup),
+        modes: List<String>.from(modes),
+        curMask: () => norm(nm['LTEBand'] ?? ''),
+        curMode: () => nm['NetworkMode'] ?? '00',
+        apply: applyQuiet,
+        keepAwake: awake,
+      );
+
+  Future<void> openGame() async {
+    if (busy || hw == null) return;
+    setState(() => busy = true);
+    try {
+      await Navigator.of(context).push(MaterialPageRoute<void>(builder: (c) => ModesHub(ctl: gameCtl())));
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+    try {
+      await refresh(sync: true);
+    } catch (_) {}
+  }
+
   // ---------- واجهة ----------
   Widget sec(String t) => Container(
       width: double.infinity,
@@ -952,6 +1005,7 @@ class _H extends State<Home> {
         tabBtn(1, Icons.router, 'ROUTER'),
         tabBtn(2, Icons.show_chart, 'CHARTS'),
         tabBtn(3, Icons.refresh, 'RECONNECT', onTap: busy ? null : reconnect),
+        tabBtn(4, Icons.tune, 'MODES', onTap: openGame),
       ]),
       if (busy) const LinearProgressIndicator(),
       Expanded(
