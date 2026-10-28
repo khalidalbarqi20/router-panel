@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'probe.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -704,7 +705,58 @@ class _H extends State<Home> {
     }
     return false;
   }
-
+  /// فحص سريع: هل يسجّل الراوتر على هذا النطاق ويتصل بالشبكة؟ (بدون قياسات ثقيلة)
+  Future<ProbeRes> probeQuiet(String mask, String mode) async {
+    final sw = Stopwatch()..start();
+    final want = bandsOf(mask);
+    final body = '<NetworkMode>$mode</NetworkMode><NetworkBand>$nb</NetworkBand><LTEBand>$mask</LTEBand>';
+    var reached = false;
+    try {
+      await hw!.login(_pw!);
+      reached = true;
+    } catch (_) {}
+    try {
+      await hw!.post('net/net-mode', body);
+    } catch (_) {
+      try {
+        await hw!.login(_pw!);
+        await hw!.post('net/net-mode', body);
+      } catch (_) {}
+    }
+    await Future.delayed(const Duration(seconds: 5));
+    var good = 0;
+    var lastBand = '';
+    while (sw.elapsed < const Duration(seconds: 40)) {
+      try {
+        final n = Huawei.kv(await hw!.get('net/net-mode'));
+        final s = Huawei.kv(await hw!.get('device/signal'));
+        reached = true;
+        var connected = true;
+        try {
+          connected = Huawei.kv(await hw!.get('monitoring/status'))['ConnectionStatus'] == '901';
+        } catch (_) {}
+        final b = int.tryParse(s['band'] ?? '');
+        final r = num_(s['rsrp']);
+        lastBand = b == null ? '' : 'B$b';
+        final applied = norm(n['LTEBand'] ?? '') == mask && n['NetworkMode'] == mode;
+        if (applied && connected && b != null && want.contains(b) && r != null) {
+          good++;
+          if (good >= 2) {
+            return ProbeRes(true, true, 'B$b', r, num_(s['sinr']), sw.elapsed.inSeconds, '');
+          }
+        } else {
+          good = 0;
+        }
+      } catch (_) {
+        try {
+          await hw!.login(_pw!);
+        } catch (_) {}
+      }
+      await Future.delayed(const Duration(seconds: 3));
+    }
+    final why = !reached ? 'الراوتر ما ردّ' : (lastBand.isEmpty ? 'ما سجّل على أي نطاق' : 'بقي على $lastBand');
+    return ProbeRes(false, reached, lastBand, null, null, sw.elapsed.inSeconds, why);
+  }
   GameCtl gameCtl() => GameCtl(
         routerHost: hw!.host,
         sup: List<int>.from(sup),
@@ -712,7 +764,8 @@ class _H extends State<Home> {
         curMask: () => norm(nm['LTEBand'] ?? ''),
         curMode: () => nm['NetworkMode'] ?? '00',
         apply: applyQuiet,
-        keepAwake: awake,
+        probe: probeQuiet,
+        keepAwake: awake,,
       );
 
   Future<void> openGame() async {
