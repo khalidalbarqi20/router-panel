@@ -1,9 +1,8 @@
-import 'dart:async';
-import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'game.dart';
 import 'measure.dart';
+import 'probe.dart';
 
 const Color _green = Color(0xFF39D353);
 
@@ -32,11 +31,12 @@ class DownloadPage extends StatefulWidget {
 }
 
 class _DownState extends State<DownloadPage> {
-  bool running = false, cancel = false, ext = false, auto = true, done = false, applying = false;
+  bool running = false, cancel = false, auto = true, done = false, applying = false;
   String step = '', advice = '', autoMsg = '', warn = '';
   int total = 0, doneN = 0, usedBytes = 0;
   final List<String> logs = <String>[];
   List<DCand> ranked = <DCand>[];
+  List<BandProbe> probes = <BandProbe>[];
   DCand? rec;
   String _curMask = '', _curMode = '', _baseMask = '', _baseMode = '';
   double _baseAvg = 0.0;
@@ -58,40 +58,31 @@ class _DownState extends State<DownloadPage> {
   String _lbl(List<int> bands, String mode) =>
       '${mode == '03' ? '4G فقط' : 'تلقائي'} · ${bands.map((b) => 'B$b').join('+')}';
 
-  List<DCand> _gen(bool extended) {
-    final ctl = widget.ctl;
-    final baseMask = ctl.curMask();
-    final baseMode = ctl.curMode();
-    final en = _bandsOf(baseMask);
+  List<DCand> _gen(List<int> work, String baseMask, String baseMode) {
     final out = <DCand>[];
     final seen = <String>{'$baseMask|$baseMode'};
 
-    void add(String mask, String mode, String label) {
-      if (mask.isEmpty || mask == '0') return;
+    void add(List<int> bands, String mode) {
+      if (bands.isEmpty || out.length >= 10) return;
+      final mask = _maskOf(bands);
       final k = '$mask|$mode';
       if (seen.contains(k)) return;
       seen.add(k);
-      out.add(DCand(mask, mode, label));
+      out.add(DCand(mask, mode, _lbl(bands, mode)));
     }
 
-    if (en.length <= 4) {
-      final n = en.length;
-      for (var m = 1; m < (1 << n); m++) {
-        final sub = <int>[for (var i = 0; i < n; i++) if ((m >> i) & 1 == 1) en[i]];
-        add(_maskOf(sub), '00', _lbl(sub, '00'));
-      }
-    } else {
-      for (final b in en) {
-        add(_maskOf(<int>[b]), '00', _lbl(<int>[b], '00'));
+    if (work.length > 1) add(work, '00');
+    for (final b in work) {
+      add(<int>[b], '00');
+    }
+    if (work.length <= 4) {
+      for (var i = 0; i < work.length; i++) {
+        for (var j = i + 1; j < work.length; j++) {
+          add(<int>[work[i], work[j]], '00');
+        }
       }
     }
-    if (ctl.modes.contains('03') && en.isNotEmpty) add(baseMask, '03', _lbl(en, '03'));
-    if (extended) {
-      for (final b in ctl.sup) {
-        add(_maskOf(<int>[b]), '00', _lbl(<int>[b], '00'));
-      }
-      add(_maskOf(ctl.sup), '00', 'تلقائي · كل النطاقات المدعومة');
-    }
+    if (work.length > 1 && widget.ctl.modes.contains('03')) add(work, '03');
     return out;
   }
 
@@ -99,6 +90,7 @@ class _DownState extends State<DownloadPage> {
     final t = await measureDown(stop);
     c.mbps = t.mbps;
     _set(() => usedBytes += t.bytes);
+    if (t.bytes < 50000) log('فشل القياس: ${t.note.isEmpty ? 'لم تصل بيانات' : t.note}');
   }
 
   Future<bool> _waitNet() async {
@@ -120,14 +112,13 @@ class _DownState extends State<DownloadPage> {
       _set(() => step = 'ما قدرت أقرأ نطاقات الراوتر. ارجع وادخل من جديد.');
       return;
     }
-    final cands = _gen(ext);
-    final mins = ((cands.length + 4) * 65 / 60).ceil();
+    final mins = (ctl.sup.length * 25 / 60).ceil() + 8;
     final ok = await showDialog<bool>(
           context: context,
           builder: (c) => AlertDialog(
             title: const Text('بدء فحص التنزيل'),
             content: Text(
-                'سيجرّب ${cands.length} إعدادًا، ويستغرق حوالي $mins دقيقة.\n\n'
+                'المرحلة 1: فحص سريع لكل النطاقات المدعومة (${ctl.sup.length}) لمعرفة أيها يشتغل.\nالمرحلة 2: قياس السرعة للشغّالة فقط وتجميعاتها.\n\nالمدة المتوقعة: من $mins إلى ${mins + 10} دقيقة.\n\n'
                 '• الفحص ينزّل ملفات اختبار، وقد يستهلك من 0.5 إلى 3 جيجابايت من باقتك حسب سرعتك.\n'
                 '• الإنترنت ينقطع 20 إلى 45 ثانية عند كل تبديل، وعن كل الأجهزة.\n'
                 '• لا تنزّل شيئًا أثناء الفحص، لأنه يخرّب القياس.\n'
@@ -153,7 +144,8 @@ class _DownState extends State<DownloadPage> {
       autoMsg = '';
       warn = '';
       logs.clear();
-      total = cands.length + 3;
+      total = ctl.sup.length + 4;
+      probes = <BandProbe>[];
       doneN = 0;
       usedBytes = 0;
       step = 'تجهيز';
@@ -162,7 +154,7 @@ class _DownState extends State<DownloadPage> {
       await WakelockPlus.enable();
     } catch (_) {}
     try {
-      await _scan(cands, baseMask, baseMode);
+      await _scan(baseMask, baseMode);
     } catch (e) {
       log('خطأ غير متوقع: $e');
     }
@@ -178,10 +170,17 @@ class _DownState extends State<DownloadPage> {
     });
   }
 
-  Future<void> _scan(List<DCand> cands, String baseMask, String baseMode) async {
+  Future<void> _scan(String baseMask, String baseMode) async {
     final ctl = widget.ctl;
     _curMask = baseMask;
     _curMode = baseMode;
+
+    _set(() => step = 'اختيار مصدر التنزيل');
+    final src = await pickDownSource(log, stop);
+    if (src.isEmpty) {
+      log('ما اشتغل أي مصدر تنزيل. أرسل لي الأسطر أعلاه لأعالجها.');
+      return;
+    }
 
     _set(() => step = 'قياس الإعداد الحالي');
     final base = DCand(baseMask, baseMode, 'الحالي', isBase: true);
@@ -194,7 +193,23 @@ class _DownState extends State<DownloadPage> {
     }
     log('الحالي: ${_f1(base.mbps)} Mbps');
 
-    var touched = false;
+    _set(() => step = 'المرحلة 1: فحص الترددات السريع');
+    final pr = await probeAll(
+      bands: ctl.sup,
+      probe: ctl.probe,
+      stop: stop,
+      log: log,
+      step: (s) => _set(() => step = s),
+      tick: () => _set(() => doneN++),
+    );
+    var touched = pr.isNotEmpty;
+    _curMask = '';
+    final work = workingBands(pr);
+    _set(() => probes = pr);
+    log(work.isEmpty ? 'ما لقيت نطاقًا شغّالًا للتعمّق.' : 'النطاقات الشغّالة للتعمّق: ${work.map((b) => 'B$b').join(' ')}');
+    final cands = _gen(work, baseMask, baseMode);
+    _set(() => total = doneN + cands.length + 2);
+
     var fails = 0;
     for (var i = 0; i < cands.length; i++) {
       if (cancel) break;
@@ -208,7 +223,7 @@ class _DownState extends State<DownloadPage> {
           c.note = 'الراوتر لم يطبّق هذا الإعداد';
           fails++;
           log('لم يتأكد تطبيق ${c.label}');
-          if (fails >= 2) {
+          if (fails >= 3) {
             log('فشل متكرر، أوقفت الفحص.');
             break;
           }
@@ -407,7 +422,7 @@ class _DownState extends State<DownloadPage> {
         body: ListView(padding: const EdgeInsets.all(12), children: [
           _card('وضع التنزيل', [
             const Text(
-                'يقيس سرعة التنزيل بعدة اتصالات متوازية لكل إعداد (مجموعات النطاقات المفعّلة عندك، بوضع تلقائي ثم 4G فقط). '
+                'أولًا يفحص بسرعة أي النطاقات تشتغل عندك، ثم يقيس سرعة التنزيل بعدة اتصالات متوازية للشغّالة منها وتجميعاتها (تلقائي ثم 4G فقط). '
                 'ملاحظة: قفل نطاق واحد قد يلغي تجميع النطاقات (Carrier Aggregation)، فنجرّب مجموعات وليس نطاقات منفردة فقط.',
                 style: TextStyle(color: Colors.white70)),
             SwitchListTile(
@@ -416,13 +431,6 @@ class _DownState extends State<DownloadPage> {
               onChanged: running || applying ? null : (v) => setState(() => auto = v),
               title: const Text('تطبيق الأفضل تلقائيًا'),
               subtitle: const Text('يتأكد بقياس ثانٍ ويرجّع الأول إن لم يتحسن'),
-            ),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              value: ext,
-              onChanged: running || applying ? null : (v) => setState(() => ext = v),
-              title: const Text('فحص موسّع'),
-              subtitle: const Text('يضيف كل النطاقات المدعومة. أطول، ويستهلك أكثر.'),
             ),
             Wrap(spacing: 8, children: [
               FilledButton(onPressed: running || applying ? null : start, child: const Text('ابدأ الفحص')),
@@ -462,6 +470,15 @@ class _DownState extends State<DownloadPage> {
                 OutlinedButton(onPressed: applying ? null : undo, child: const Text('رجوع للإعداد الأول')),
               ],
             ]),
+            if (probes.isNotEmpty)
+              _card('الترددات الشغّالة (فحص سريع)', [
+                for (final p in probes)
+                  Text(
+                      p.res.ok
+                          ? '✓ B${p.band}: RSRP ${p.res.rsrp?.toStringAsFixed(0) ?? '-'} · SINR ${p.res.sinr?.toStringAsFixed(0) ?? '-'}'
+                          : '✗ B${p.band}: ${p.res.note}',
+                      style: TextStyle(fontSize: 13, color: p.res.ok ? _green : Colors.white54)),
+              ]),
             _card('كل النتائج', [
               for (var i = 0; i < ranked.length; i++)
                 _row(ranked[i].mbps == null ? 0 : ranked.take(i + 1).where((x) => x.mbps != null).length,
