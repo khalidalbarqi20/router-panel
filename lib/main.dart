@@ -10,6 +10,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'game.dart';
 import 'modes.dart';
+import 'brand.dart';
 import 'netinfo.dart';
 
 const _st = FlutterSecureStorage();
@@ -326,7 +327,7 @@ class _H extends State<Home> {
   final host = TextEditingController(text: '192.168.8.1'), pw = TextEditingController();
   Huawei? hw;
   String? _pw;
-  Map<String, String> sig = {}, nm = {}, tr = {};
+  Map<String, String> sig = {}, nm = {}, tr = {}, stx = {};
   Map<String, String>? orig;
   List<String> modes = [];
   List<int> sup = [];
@@ -419,8 +420,13 @@ class _H extends State<Home> {
     try {
       t = Huawei.kv(await hw!.get('monitoring/traffic-statistics'));
     } catch (_) {}
+    Map<String, String> sx = stx;
+    try {
+      sx = Huawei.kv(await hw!.get('monitoring/status'));
+    } catch (_) {}
     if (!mounted) return;
     setState(() {
+      stx = sx;
       sig = Huawei.kv(s);
       nm = Huawei.kv(n);
       tr = t;
@@ -1086,7 +1092,9 @@ class _H extends State<Home> {
           color: kHead,
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           child: Row(children: [
-            Icon(kIcons[cur?.icon] ?? Icons.router, color: kGreen),
+            (cur?.icon == null || cur?.icon == 'router')
+                ? const KifiBadge(size: 30)
+                : Icon(kIcons[cur?.icon] ?? Icons.router, color: kGreen),
             const SizedBox(width: 8),
             Flexible(
                 child: Text((cur != null && cur!.name.isNotEmpty) ? cur!.name : (model.isEmpty ? 'ROUTER' : model),
@@ -1106,7 +1114,7 @@ class _H extends State<Home> {
       if (busy) const LinearProgressIndicator(),
       Expanded(
           child: ListView(children: [
-        ...(tab == 0 ? cellTab() : tab == 1 ? routerTab() : chartsTab()),
+        ...(tab == 0 ? <Widget>[SignalHero(sig: sig, st: stx), ...cellTab()] : tab == 1 ? routerTab() : chartsTab()),
         if (msg.isNotEmpty) Padding(padding: const EdgeInsets.all(12), child: SelectableText(msg)),
       ])),
     ])));

@@ -16,6 +16,9 @@ jobs:
           cp -r lib/. app/lib/
           K=$(find app/android/app/src/main -name 'MainActivity.kt' | head -1)
           if [ -n "$K" ]; then cp -f android_src/MainActivity.kt "$K"; fi
+          R=app/android/app/src/main/res
+          rm -f $R/mipmap-anydpi-v26/ic_launcher*.xml
+          cp -r android_icons/. $R/
           M=app/android/app/src/main/AndroidManifest.xml
           for G in app/android/app/build.gradle app/android/app/build.gradle.kts; do
             [ -f "$G" ] && sed -i -E 's/minSdk = flutter.minSdkVersion/minSdk = 24/; s/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/' "$G" || true
