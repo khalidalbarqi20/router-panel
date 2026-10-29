@@ -312,7 +312,11 @@ class App extends StatelessWidget {
             useMaterial3: true,
             colorScheme: ColorScheme.fromSeed(seedColor: kGreen, brightness: Brightness.dark),
             scaffoldBackgroundColor: kBg),
-        builder: (c, w) => Directionality(textDirection: TextDirection.rtl, child: w!),
+        builder: (c, w) => Directionality(
+            textDirection: TextDirection.rtl,
+            child: ColoredBox(
+                color: kBg,
+                child: Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 640), child: w!)))),
         home: const Home(),
       );
 }

@@ -1,5 +1,7 @@
+import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'game.dart';
 import 'measure.dart';
@@ -8,6 +10,7 @@ import 'probe.dart';
 import 'pubg.dart' show kPubgTargets;
 
 const Color _green = Color(0xFF39D353);
+const FlutterSecureStorage _store = FlutterSecureStorage();
 
 /// نطاقات LTE الشائعة في السعودية: تُفحص حتى لو ما ظهرت في قائمة الراوتر (مثل B28).
 const List<int> kSaudiBands = <int>[1, 3, 5, 7, 8, 20, 28, 38, 40, 41, 42, 43];
@@ -89,6 +92,8 @@ class _NIState extends State<NetInfoPage> {
   final List<String> logs = <String>[];
   List<DRow> rows = <DRow>[];
   String bestPingLabel = '', bestPingMask = '', bestSpeedLabel = '', bestSpeedMask = '';
+  final Map<int, int> roles = <int, int>{};
+  String roleMsg = '';
   Pinger? rp;
   final List<Pinger> tp = <Pinger>[];
   final List<String> tn = <String>[];
@@ -110,6 +115,7 @@ class _NIState extends State<NetInfoPage> {
   void initState() {
     super.initState();
     _refresh();
+    _loadRoles();
   }
 
   Future<void> _refresh() async {
@@ -380,6 +386,166 @@ class _NIState extends State<NetInfoPage> {
     await _refresh();
   }
 
+  // ---------- أساسي وثانوي ----------
+  Future<void> _loadRoles() async {
+    try {
+      final s = await _store.read(key: 'band_roles');
+      if (s == null) return;
+      final m = jsonDecode(s) as Map<String, dynamic>;
+      _set(() {
+        roles.clear();
+        m.forEach((k, v) {
+          final b = int.tryParse(k);
+          if (b != null && v is int && (v == 1 || v == 2)) roles[b] = v;
+        });
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _saveRoles() async {
+    try {
+      await _store.write(
+          key: 'band_roles', value: jsonEncode(<String, int>{for (final e in roles.entries) '${e.key}': e.value}));
+    } catch (_) {}
+  }
+
+  void _cycle(int b) {
+    if (running || applying) return;
+    setState(() {
+      final v = roles[b] ?? 0;
+      if (v == 0) {
+        roles[b] = 1;
+      } else if (v == 1) {
+        roles[b] = 2;
+      } else {
+        roles.remove(b);
+      }
+    });
+    _saveRoles();
+  }
+
+  Future<bool> _waitNet2() async {
+    for (var i = 0; i < 20; i++) {
+      if (await netDiag() == 'OK') return true;
+      await Future<void>.delayed(const Duration(seconds: 3));
+    }
+    return false;
+  }
+
+  Future<void> _applyRoles() async {
+    if (running || applying) return;
+    final pri = roles.entries.where((e) => e.value == 1).map((e) => e.key).toList()..sort();
+    final sec = roles.entries.where((e) => e.value == 2).map((e) => e.key).toList()..sort();
+    if (pri.isEmpty) {
+      _set(() => roleMsg = 'اختر نطاقًا أساسيًا واحدًا على الأقل.');
+      return;
+    }
+    final ctl = widget.ctl;
+    final names = (List<int> l) => l.map((b) => 'B$b').join(' ');
+    final lines = <String>[];
+    for (final b in <int>[...pri, ...sec]) {
+      final hit = gQuick.where((p) => p.band == b).toList();
+      if (hit.isNotEmpty && !hit.first.res.ok) lines.add('تنبيه: B$b ما اشتغل في الاختبار القصير.');
+    }
+    _set(() {
+      applying = true;
+      roleMsg = 'تطبيق الأساسي: ${names(pri)} ...';
+    });
+    try {
+      final ok1 = await ctl.apply(_maskOf(pri), '00');
+      lines.add(ok1 ? 'تم تطبيق الأساسي: ${names(pri)}' : 'الراوتر لم يطبّق الأساسي.');
+      if (ok1 && sec.isNotEmpty) {
+        _set(() => roleMsg = 'انتظار الاتصال على الأساسي...');
+        await _waitNet2();
+        await Future<void>.delayed(const Duration(seconds: 5));
+        _set(() => roleMsg = 'إضافة الثانوي: ${names(sec)} ...');
+        final ok2 = await ctl.apply(_maskOf(<int>[...pri, ...sec]), '00');
+        lines.add(ok2 ? 'تمت إضافة الثانوي: ${names(sec)}' : 'الراوتر لم يطبّق إضافة الثانوي.');
+      }
+      if (ok1) {
+        _set(() => roleMsg = 'انتظار الاستقرار والتحقق...');
+        await _waitNet2();
+        await Future<void>.delayed(const Duration(seconds: 8));
+        final f = ctl.snap;
+        final m = f == null ? <String, String>{} : await f();
+        final cur = int.tryParse(_g(m, <String>['band']));
+        if (cur != null) {
+          lines.add(pri.contains(cur)
+              ? 'النطاق الأساسي الفعلي الآن: B$cur (من اختيارك).'
+              : 'النطاق الأساسي الفعلي الآن: B$cur، وهو ليس من الأساسي اللي اخترته. الشبكة هي اللي تقرر الأساسي في النهاية.');
+        }
+        lines.add(sec.isEmpty
+            ? 'ما اخترت ثانوي، فما فيه تجميع مطلوب.'
+            : (_snapCa(m)
+                ? 'تجميع النطاقات شغّال (+).'
+                : 'التجميع غير ظاهر الآن. قد يحتاج وقتًا، أو الشبكة ما تدعم هذي التركيبة في موقعك.'));
+      }
+    } catch (e) {
+      lines.add('خطأ: $e');
+    }
+    _set(() {
+      applying = false;
+      roleMsg = lines.join('\n');
+    });
+    await _refresh();
+  }
+
+  Widget _roleChip(int b) {
+    final r = roles[b] ?? 0;
+    final hit = gQuick.where((p) => p.band == b).toList();
+    final mark = hit.isEmpty ? '' : (hit.first.res.ok ? ' ✓' : ' ✗');
+    final bg = r == 1 ? _green : (r == 2 ? Colors.lightBlueAccent : Colors.transparent);
+    return InkWell(
+      borderRadius: BorderRadius.circular(18),
+      onTap: () => _cycle(b),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: r == 0 ? Colors.white24 : bg),
+        ),
+        child: Text('B$b$mark${r == 1 ? ' · أساسي' : (r == 2 ? ' · ثانوي' : '')}',
+            style: TextStyle(fontSize: 13, color: r == 0 ? Colors.white70 : Colors.black, fontWeight: FontWeight.bold)),
+      ),
+    );
+  }
+
+  Widget _rolesCard() => _card('نطاق أساسي وثانوي', [
+        const Text(
+            'اضغط على النطاق: مرة = أساسي (أخضر)، مرتين = ثانوي (أزرق)، ثالثة = إلغاء. يجوز أكثر من أساسي، والثانوي يدعم الأساسي بالتجميع.',
+            style: TextStyle(color: Colors.white70, fontSize: 13)),
+        const SizedBox(height: 10),
+        Wrap(spacing: 8, runSpacing: 8, children: [for (final b in _bands) _roleChip(b)]),
+        const SizedBox(height: 10),
+        Row(children: [
+          Expanded(
+            child: FilledButton(
+              onPressed: running || applying || roles.isEmpty ? null : _applyRoles,
+              child: const Text('طبّق الأساسي والثانوي'),
+            ),
+          ),
+          const SizedBox(width: 8),
+          OutlinedButton(
+            onPressed: running || applying || roles.isEmpty
+                ? null
+                : () {
+                    setState(roles.clear);
+                    _saveRoles();
+                  },
+            child: const Text('مسح'),
+          ),
+        ]),
+        if (roleMsg.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Text(roleMsg, style: const TextStyle(fontSize: 13)),
+        ],
+        const SizedBox(height: 8),
+        const Text(
+            'ملاحظة: الراوتر ما يسمح بتحديد النطاق الأساسي مباشرة. التطبيق يقفل الأساسي أولًا ثم يوسّع للثانوي ويتحقق من النتيجة، لكن الشبكة هي اللي تقرر في النهاية.',
+            style: TextStyle(fontSize: 11, color: Colors.white38)),
+      ]);
+
   // ---------- واجهة ----------
   Widget _card(String t, List<Widget> c, {Widget? trailing}) => Card(
         margin: const EdgeInsets.symmetric(vertical: 6),
@@ -598,6 +764,7 @@ class _NIState extends State<NetInfoPage> {
             _statusCard(),
             _hostsCard(),
             _quickCard(),
+            _rolesCard(),
             _deepCard(),
           ]),
         ),

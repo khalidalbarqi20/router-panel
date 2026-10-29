@@ -226,6 +226,10 @@ class _PubgState extends State<PubgPage> {
         _fin(t.id, St.bad, 'لا يوجد إنترنت', <String>['ما أقدر أقيس بدون إنترنت.']);
         continue;
       }
+      if (!Platform.isAndroid && (t.id == 'link' || t.id == 'chan')) {
+        _fin(t.id, St.warn, 'متاح على الجوال فقط', <String>['قياس إشارة الواي فاي والقنوات يحتاج أندرويد.']);
+        continue;
+      }
       try {
         switch (t.id) {
           case 'link':

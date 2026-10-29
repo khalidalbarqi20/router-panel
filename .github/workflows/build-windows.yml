@@ -1,0 +1,30 @@
+name: build-windows
+on: workflow_dispatch
+jobs:
+  win:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Create Windows project and apply sources
+        shell: bash
+        run: |
+          flutter create --platforms=windows --project-name router_panel app_win
+          cp -f pubspec.yaml app_win/pubspec.yaml
+          rm -f app_win/lib/main.dart
+          cp -r lib/. app_win/lib/
+      - name: Build
+        working-directory: app_win
+        shell: bash
+        run: |
+          flutter pub get
+          flutter build windows --release
+      - name: Zip
+        shell: pwsh
+        run: Compress-Archive -Path app_win/build/windows/x64/runner/Release/* -DestinationPath router-panel-windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: router-panel-windows
+          path: router-panel-windows.zip
