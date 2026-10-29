@@ -4,7 +4,23 @@ class ProbeRes {
   final String band, note;
   final double? rsrp, sinr;
   final int secs;
-  ProbeRes(this.ok, this.reachable, this.band, this.rsrp, this.sinr, this.secs, this.note);
+  final String cell, pci, earfcn;
+  final bool ca;
+  ProbeRes(this.ok, this.reachable, this.band, this.rsrp, this.sinr, this.secs, this.note,
+      {this.cell = '', this.pci = '', this.earfcn = '', this.ca = false});
+}
+
+/// هل الراوتر يستخدم تجميع نطاقات (4G+)؟ يعتمد على نوع الشبكة 1011 أو حقول الخلية الثانوية إن وُجدت.
+bool isCaMap(Map<String, String> st, Map<String, String> sig) {
+  if ((st['CurrentNetworkTypeEx'] ?? '') == '1011') return true;
+  for (final e in sig.entries) {
+    final k = e.key.toLowerCase();
+    if ((k.contains('scell') || k.startsWith('scc') || k.contains('ca_band')) &&
+        e.value.isNotEmpty && e.value != '0' && e.value != '--') {
+      return true;
+    }
+  }
+  return false;
 }
 
 class BandProbe {

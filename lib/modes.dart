@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'download.dart';
 import 'game.dart';
+import 'netinfo.dart';
+import 'pubg.dart';
 
-/// صفحة المودات: تجمع وضع الألعاب ووضع التنزيل.
+/// صفحة المودات: تجمع وضع الألعاب ووضع التنزيل ووضع ببجي.
 class ModesHub extends StatelessWidget {
   final GameCtl ctl;
   const ModesHub({super.key, required this.ctl});
@@ -22,8 +24,12 @@ class ModesHub extends StatelessWidget {
   Widget build(BuildContext context) => Scaffold(
         appBar: AppBar(title: const Text('المودات')),
         body: ListView(padding: const EdgeInsets.all(12), children: [
+          _tile(context, Icons.cell_tower, 'الشبكة والنطاقات',
+              'الأبراج، تجميع النطاقات +، الأجهزة المتصلة، اختبار قصير وفحص شامل', NetInfoPage(ctl: ctl)),
           _tile(context, Icons.sports_esports, 'وضع الألعاب',
               'أقل بنق وتذبذب وفقد حزم (فورتنايت)', GamePage(ctl: ctl)),
+          _tile(context, Icons.smartphone, 'وضع ببجي (واي فاي)',
+              'فحص الواي فاي والقنوات والبنق، كل فحص لحاله أو الكل', PubgPage(ctl: ctl)),
           _tile(context, Icons.download, 'وضع التنزيل',
               'أسرع سرعة تنزيل للبرامج والألعاب، ويطبّق الأفضل تلقائيًا', DownloadPage(ctl: ctl)),
         ]),

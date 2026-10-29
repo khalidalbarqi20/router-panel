@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'measure.dart';
+import 'netcheck.dart';
 import 'probe.dart';
 
 const Color _green = Color(0xFF39D353);
@@ -17,6 +18,10 @@ class GameCtl {
   final Future<bool> Function(String mask, String mode) apply;
   final Future<ProbeRes> Function(String mask, String mode) probe;
   final bool keepAwake;
+  final Future<Map<String, String>> Function()? snap;
+  final Future<List<Map<String, String>>> Function()? hosts;
+  final List<int> scanList;
+  List<int> get scan => scanList.isNotEmpty ? scanList : sup;
   GameCtl({
     required this.routerHost,
     required this.sup,
@@ -26,6 +31,9 @@ class GameCtl {
     required this.apply,
     required this.probe,
     required this.keepAwake,
+    this.snap,
+    this.hosts,
+    this.scanList = const <int>[],
   });
 }
 
@@ -233,7 +241,7 @@ class _GameState extends State<GamePage> {
       warn = '';
       applyMsg = '';
       logs.clear();
-      total = ctl.sup.length + 4;
+      total = ctl.scan.length + 4;
       doneN = 0;
       step = 'تجهيز';
     });
@@ -259,6 +267,12 @@ class _GameState extends State<GamePage> {
 
   Future<void> _scan(String baseMask, String baseMode) async {
     final ctl = widget.ctl;
+    if (!await ensureInternet(ctl, log, stop, () async => mounted && await askRepair(context))) {
+      log('أوقفت الفحص: ما فيه إنترنت.');
+      return;
+    }
+    baseMask = ctl.curMask();
+    baseMode = ctl.curMode();
     _curMask = baseMask;
     _curMode = baseMode;
     await PingEngine.detect(ctl.routerHost);
@@ -294,7 +308,7 @@ class _GameState extends State<GamePage> {
 
     _set(() => step = 'المرحلة 1: فحص الترددات السريع');
     final pr = await probeAll(
-      bands: ctl.sup,
+      bands: ctl.scan,
       probe: ctl.probe,
       stop: stop,
       log: log,

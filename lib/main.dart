@@ -10,6 +10,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'game.dart';
 import 'modes.dart';
+import 'netinfo.dart';
 
 const _st = FlutterSecureStorage();
 
@@ -726,23 +727,31 @@ class _H extends State<Home> {
     await Future.delayed(const Duration(seconds: 5));
     var good = 0;
     var lastBand = '';
-    while (sw.elapsed < const Duration(seconds: 55)) {
+    var everApplied = false;
+    while (sw.elapsed < const Duration(seconds: 55) && (everApplied || sw.elapsed < const Duration(seconds: 25))) {
       try {
         final n = Huawei.kv(await hw!.get('net/net-mode'));
         final s = Huawei.kv(await hw!.get('device/signal'));
         reached = true;
         var connected = true;
+        var stm = <String, String>{};
         try {
-          connected = Huawei.kv(await hw!.get('monitoring/status'))['ConnectionStatus'] == '901';
+          stm = Huawei.kv(await hw!.get('monitoring/status'));
+          connected = stm['ConnectionStatus'] == '901';
         } catch (_) {}
         final b = num_(s['band'])?.toInt();
         final r = num_(s['rsrp']);
         lastBand = b == null ? '' : 'B$b';
         final applied = norm(n['LTEBand'] ?? '') == norm(mask) && n['NetworkMode'] == mode;
+        if (applied) everApplied = true;
         if (applied && connected && b != null && want.contains(b)) {
           good++;
           if (good >= 2) {
-            return ProbeRes(true, true, 'B$b', r, num_(s['sinr']), sw.elapsed.inSeconds, '');
+            return ProbeRes(true, true, 'B$b', r, num_(s['sinr']), sw.elapsed.inSeconds, '',
+                cell: s['cell_id'] ?? '',
+                pci: s['pci'] ?? '',
+                earfcn: s['earfcn'] ?? s['dlearfcn'] ?? s['ltedlfreq'] ?? '',
+                ca: isCaMap(stm, s));
           }
         } else {
           good = 0;
@@ -754,9 +763,40 @@ class _H extends State<Home> {
       }
       await Future.delayed(const Duration(seconds: 3));
     }
-    final why = !reached ? 'الراوتر ما ردّ' : (lastBand.isEmpty ? 'ما سجّل على أي نطاق' : 'بقي على $lastBand');
+    final why = !reached ? 'الراوتر ما ردّ' : (!everApplied ? 'الراوتر ما قبل هذا النطاق (غير مدعوم؟)' : (lastBand.isEmpty ? 'ما سجّل على أي نطاق' : 'بقي على $lastBand'));
     return ProbeRes(false, reached, lastBand, null, null, sw.elapsed.inSeconds, why);
   }
+  /// حالة الراوتر: الإشارة + الحالة العامة (الحقول المأخوذة من الحالة تبدأ بـ st_).
+  Future<Map<String, String>> snapQuiet() async {
+    final s = Huawei.kv(await hw!.get('device/signal'));
+    var st = <String, String>{};
+    try {
+      st = Huawei.kv(await hw!.get('monitoring/status'));
+    } catch (_) {}
+    return <String, String>{...s, for (final e in st.entries) 'st_${e.key}': e.value};
+  }
+
+  /// الأجهزة المتصلة (واي فاي + سلك)، بدون تكرار.
+  Future<List<Map<String, String>>> hostsQuiet() async {
+    final out = <String, Map<String, String>>{};
+    List<Map<String, String>> parse(String x) => <Map<String, String>>[
+          for (final mm in RegExp(r'<Host>(.*?)</Host>', dotAll: true).allMatches(x)) Huawei.kv(mm[1]!)
+        ];
+    try {
+      for (final h in parse(await hw!.get('wlan/host-list'))) {
+        out[h['MacAddress'] ?? h['IpAddress'] ?? '${out.length}'] = <String, String>{...h, '_t': 'wifi'};
+      }
+    } catch (_) {}
+    try {
+      for (final h in parse(await hw!.get('lan/HostInfo'))) {
+        if ((h['Active'] ?? '1') == '0') continue;
+        out.putIfAbsent(h['MacAddress'] ?? h['IpAddress'] ?? '${out.length}',
+            () => <String, String>{...h, '_t': (h['InterfaceType'] ?? '').toLowerCase().contains('wi') ? 'wifi' : 'lan'});
+      }
+    } catch (_) {}
+    return out.values.toList();
+  }
+
   GameCtl gameCtl() => GameCtl(
         routerHost: hw!.host,
         sup: List<int>.from(sup),
@@ -766,6 +806,9 @@ class _H extends State<Home> {
         apply: applyQuiet,
         probe: probeQuiet,
         keepAwake: awake,
+        snap: snapQuiet,
+        hosts: hostsQuiet,
+        scanList: (<int>{...sup, ...kSaudiBands}.toList()..sort()),
       );
 
   Future<void> openGame() async {

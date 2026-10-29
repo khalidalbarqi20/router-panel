@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'game.dart';
 import 'measure.dart';
+import 'netcheck.dart';
 import 'probe.dart';
 
 const Color _green = Color(0xFF39D353);
@@ -144,7 +145,7 @@ class _DownState extends State<DownloadPage> {
       autoMsg = '';
       warn = '';
       logs.clear();
-      total = ctl.sup.length + 4;
+      total = ctl.scan.length + 4;
       probes = <BandProbe>[];
       doneN = 0;
       usedBytes = 0;
@@ -172,6 +173,14 @@ class _DownState extends State<DownloadPage> {
 
   Future<void> _scan(String baseMask, String baseMode) async {
     final ctl = widget.ctl;
+    if (!await ensureInternet(ctl, log, stop, () async => mounted && await askRepair(context))) {
+      log('أوقفت الفحص: ما فيه إنترنت.');
+      return;
+    }
+    baseMask = ctl.curMask();
+    baseMode = ctl.curMode();
+    _baseMask = baseMask;
+    _baseMode = baseMode;
     _curMask = baseMask;
     _curMode = baseMode;
 
@@ -195,7 +204,7 @@ class _DownState extends State<DownloadPage> {
 
     _set(() => step = 'المرحلة 1: فحص الترددات السريع');
     final pr = await probeAll(
-      bands: ctl.sup,
+      bands: ctl.scan,
       probe: ctl.probe,
       stop: stop,
       log: log,
