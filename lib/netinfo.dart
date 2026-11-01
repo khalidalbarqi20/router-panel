@@ -93,6 +93,7 @@ class _NIState extends State<NetInfoPage> {
   List<DRow> rows = <DRow>[];
   String bestPingLabel = '', bestPingMask = '', bestSpeedLabel = '', bestSpeedMask = '';
   final Map<int, int> roles = <int, int>{};
+  final Set<int> sel = <int>{};
   String roleMsg = '';
   Pinger? rp;
   final List<Pinger> tp = <Pinger>[];
@@ -178,16 +179,17 @@ class _NIState extends State<NetInfoPage> {
   }
 
   // ---------- الاختبار القصير ----------
-  Future<void> _quickTest() async {
+  Future<void> _quickTest({bool onlySel = false}) async {
     if (running || applying) return;
-    final bands = _bands;
+    final only = onlySel ? (<int>[...sel]..sort()) : null;
+    final bands = only ?? _bands;
     final mins = (bands.length * 25 / 60).ceil();
     final ok = await _confirm('الاختبار القصير',
         'يفحص ${bands.length} نطاقًا سريعًا (يشمل B28) ويعرف أيها يشتغل. الإنترنت ينقطع عن كل الأجهزة أثناءه، والمدة التقريبية من $mins إلى ${mins * 2 + 2} دقيقة. في النهاية يرجع إعدادك الحالي.');
     if (!ok) return;
     await _begin();
     try {
-      await _quickRun();
+      await _quickRun(only: only);
     } catch (e) {
       log('خطأ غير متوقع: $e');
     }
@@ -195,7 +197,7 @@ class _NIState extends State<NetInfoPage> {
   }
 
   /// يفحص كل النطاقات ويحفظ النتيجة في gQuick ثم يرجّع الإعداد الأول.
-  Future<bool> _quickRun() async {
+  Future<bool> _quickRun({List<int>? only}) async {
     final ctl = widget.ctl;
     if (!await ensureInternet(ctl, log, stop, () async => mounted && await askRepair(context))) {
       log('أوقفت الفحص: ما فيه إنترنت.');
@@ -208,15 +210,21 @@ class _NIState extends State<NetInfoPage> {
       return false;
     }
     final pr = await probeAll(
-      bands: _bands,
+      bands: only ?? _bands,
       probe: ctl.probe,
       stop: stop,
       log: log,
       step: (s) => _set(() => step = s),
       tick: () {},
     );
-    gQuick = pr;
-    gQuickAt = DateTime.now();
+    if (only == null) {
+      gQuick = pr;
+      gQuickAt = DateTime.now();
+    } else {
+      // دمج نتيجة النطاقات المحددة مع النتائج السابقة بدون مسحها
+      gQuick = <BandProbe>[...gQuick.where((p) => !only.contains(p.band)), ...pr];
+      gQuickAt ??= DateTime.now();
+    }
     _set(() => step = 'رجوع للإعداد الحالي');
     final back = await ctl.apply(baseMask, baseMode);
     if (!back) log('تنبيه: ما تأكدت من الرجوع للإعداد الأول. افحص تبويب ROUTER.');
@@ -233,11 +241,14 @@ class _NIState extends State<NetInfoPage> {
     return false;
   }
 
-  Future<void> _deepTest() async {
+  Future<void> _deepTest({bool onlySel = false}) async {
     if (running || applying) return;
+    final only = onlySel ? (<int>[...sel]..sort()) : null;
     final stale = gQuick.isEmpty || gQuickAt == null || DateTime.now().difference(gQuickAt!).inMinutes > 30;
     final ok = await _confirm('الفحص الشامل',
-        stale
+        only != null
+            ? 'يقيس النطاقات المحددة (${only.map((b) => 'B$b').join(' ')}) فقط (بنق وتذبذب وفقد وسرعة تنزيل) ثم المحددة معًا. اللي ما انفحص منها قبل يفحصه أولًا ويتخطى اللي ما يشتغل. والإنترنت ينقطع أثناءه.'
+            : stale
             ? 'ما فيه نتيجة حديثة للاختبار القصير، فيشغّله أولًا ثم يقيس كل نطاق شغّال (بنق وتذبذب وفقد وسرعة تنزيل) وكل الشغّالة معًا. يأخذ وقتًا طويلًا (قد يصل لساعة)، والإنترنت ينقطع أثناءه.'
             : 'يقيس كل نطاق شغّال حسب آخر اختبار قصير (بنق وتذبذب وفقد وسرعة تنزيل) وكل الشغّالة معًا. والإنترنت ينقطع أثناءه.');
     if (!ok) return;
@@ -248,25 +259,39 @@ class _NIState extends State<NetInfoPage> {
       bestSpeedMask = '';
     });
     try {
-      await _deepRun(stale);
+      await _deepRun(stale, only: only);
     } catch (e) {
       log('خطأ غير متوقع: $e');
     }
     await _end('انتهى الفحص الشامل');
   }
 
-  Future<void> _deepRun(bool stale) async {
+  Future<void> _deepRun(bool stale, {List<int>? only}) async {
     final ctl = widget.ctl;
-    if (stale) {
+    if (only != null) {
+      final fresh = gQuickAt != null && DateTime.now().difference(gQuickAt!).inMinutes <= 30;
+      final need = <int>[for (final b in only) if (!(fresh && gQuick.any((p) => p.band == b))) b];
+      if (need.isNotEmpty) {
+        log('يفحص أولًا النطاقات اللي ما انفحصت: ${need.map((b) => 'B$b').join(' ')}');
+        if (!await _quickRun(only: need) || cancel) return;
+      } else if (!await ensureInternet(ctl, log, stop, () async => mounted && await askRepair(context))) {
+        return;
+      }
+    } else if (stale) {
       if (!await _quickRun() || cancel) return;
     } else if (!await ensureInternet(ctl, log, stop, () async => mounted && await askRepair(context))) {
       return;
     }
     final baseMask = ctl.curMask();
     final baseMode = ctl.curMode();
-    final work = workingBands(gQuick, max: 40);
+    final allWork = workingBands(gQuick, max: 40);
+    final work = only == null ? allWork : <int>[for (final b in allWork) if (only.contains(b)) b];
+    if (only != null) {
+      final skipped = <int>[for (final b in only) if (!work.contains(b)) b];
+      if (skipped.isNotEmpty) log('تخطّيت ${skipped.map((b) => 'B$b').join(' ')}: ما اشتغلت في الاختبار القصير.');
+    }
     if (work.isEmpty) {
-      log('ما فيه نطاق شغّال حسب الاختبار القصير.');
+      log(only == null ? 'ما فيه نطاق شغّال حسب الاختبار القصير.' : 'ما فيه نطاق شغّال بين النطاقات المحددة.');
       return;
     }
     _set(() => step = 'تجهيز');
@@ -309,7 +334,7 @@ class _NIState extends State<NetInfoPage> {
     for (final b in work) {
       cands.add(DRow('B$b', maskOne(b)));
     }
-    if (work.length >= 2) cands.add(DRow('كل الشغّالة معًا', _maskOf(work)));
+    if (work.length >= 2) cands.add(DRow(only == null ? 'كل الشغّالة معًا' : 'المحددة معًا', _maskOf(work)));
 
     var touched = false;
     for (var i = 0; i < cands.length && !cancel; i++) {
@@ -692,6 +717,72 @@ class _NIState extends State<NetInfoPage> {
     ]);
   }
 
+  Widget _selCard() {
+    final bands = _bands;
+    final okSet = <int>{for (final p in gQuick) if (p.res.ok) p.band};
+    final badSet = <int>{for (final p in gQuick) if (!p.res.ok) p.band};
+    final off = running || applying;
+    final cnt = sel.length;
+    return _card('اختبار نطاقات محددة', [
+      const Text(
+          'اختر نطاق واحد أو أكثر واختبرهم بدون ما تضيّع وقت على النطاقات اللي ما تشتغل. علامة ✓ تعني شغّال و ✗ ما اشتغل حسب آخر اختبار قصير.',
+          style: TextStyle(color: Colors.white54, fontSize: 13)),
+      const SizedBox(height: 8),
+      Wrap(spacing: 6, runSpacing: 4, children: [
+        for (final b in bands)
+          FilterChip(
+            label: Text('B$b'),
+            selected: sel.contains(b),
+            showCheckmark: false,
+            avatar: okSet.contains(b)
+                ? const Icon(Icons.check_circle, size: 16, color: _green)
+                : (badSet.contains(b) ? const Icon(Icons.cancel, size: 16, color: Colors.redAccent) : null),
+            onSelected: off
+                ? null
+                : (v) => setState(() {
+                      if (v) {
+                        sel.add(b);
+                      } else {
+                        sel.remove(b);
+                      }
+                    }),
+          ),
+      ]),
+      const SizedBox(height: 4),
+      Wrap(spacing: 8, children: [
+        TextButton(
+            onPressed: off
+                ? null
+                : () => setState(() {
+                      sel
+                        ..clear()
+                        ..addAll(bands);
+                    }),
+            child: const Text('الكل')),
+        TextButton(
+            onPressed: off || okSet.isEmpty
+                ? null
+                : () => setState(() {
+                      sel
+                        ..clear()
+                        ..addAll(okSet.where(bands.contains));
+                    }),
+            child: const Text('الشغّالة فقط')),
+        TextButton(onPressed: off || sel.isEmpty ? null : () => setState(sel.clear), child: const Text('مسح')),
+      ]),
+      const SizedBox(height: 6),
+      FilledButton.tonal(
+        onPressed: off || cnt == 0 ? null : () => _quickTest(onlySel: true),
+        child: Text('اختبار قصير للمحدد ($cnt)'),
+      ),
+      const SizedBox(height: 8),
+      FilledButton(
+        onPressed: off || cnt == 0 ? null : () => _deepTest(onlySel: true),
+        child: Text('فحص شامل للمحدد ($cnt)'),
+      ),
+    ]);
+  }
+
   Widget _deepCard() {
     final sorted = [...rows];
     return _card('الفحص الشامل', [
@@ -764,6 +855,7 @@ class _NIState extends State<NetInfoPage> {
             _statusCard(),
             _hostsCard(),
             _quickCard(),
+            _selCard(),
             _rolesCard(),
             _deepCard(),
           ]),
