@@ -12,8 +12,12 @@ import 'game.dart';
 import 'modes.dart';
 import 'brand.dart';
 import 'netinfo.dart';
+import 'netquality.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 const _st = FlutterSecureStorage();
+/// سرعة تحديث المؤشرات بالميلي ثانية (500 = كل نص ثانية). صغّره للأسرع، لكن لا تنزل عن 300.
+const kFastMs = 500;
 
 class Resp {
   final String body;
@@ -351,6 +355,14 @@ class _H extends State<Home> {
   final dname = TextEditingController();
   int tab = 0;
   Timer? timer;
+  bool nqHold = false;
+  int tick = 0;
+  late final NqController nq = NqController(
+      getSig: () => sig,
+      getSt: () => stx,
+      ctl: gameCtl,
+      confirm: confirm,
+      hold: (v) => nqHold = v);
 
   @override
   void initState() {
@@ -362,6 +374,7 @@ class _H extends State<Home> {
   void dispose() {
     timer?.cancel();
     coolT?.cancel();
+    nq.dispose();
     dname.dispose();
     super.dispose();
   }
@@ -437,9 +450,30 @@ class _H extends State<Home> {
       final r = num_(sig['rsrp']), q = num_(sig['sinr']);
       if (r != null) hR.add(r);
       if (q != null) hS.add(q);
-      if (hR.length > 120) hR.removeAt(0);
-      if (hS.length > 120) hS.removeAt(0);
+      if (hR.length > 600) hR.removeAt(0);
+      if (hS.length > 600) hS.removeAt(0);
       if (sync || sel.isEmpty) sel = bandsOf(nm['LTEBand'] ?? '0').toSet();
+    });
+  }
+
+  /// تحديث خفيف للإشارة (وأحيانًا السرعة اللحظية) بدون بقية الطلبات.
+  Future<void> refreshFast(bool withTraffic) async {
+    final s = await hw!.get('device/signal');
+    Map<String, String> t = tr;
+    if (withTraffic) {
+      try {
+        t = Huawei.kv(await hw!.get('monitoring/traffic-statistics'));
+      } catch (_) {}
+    }
+    if (!mounted) return;
+    setState(() {
+      sig = Huawei.kv(s);
+      tr = t;
+      final r = num_(sig['rsrp']), q = num_(sig['sinr']);
+      if (r != null) hR.add(r);
+      if (q != null) hS.add(q);
+      if (hR.length > 600) hR.removeAt(0);
+      if (hS.length > 600) hS.removeAt(0);
     });
   }
 
@@ -502,14 +536,21 @@ class _H extends State<Home> {
           await _st.write(key: okey, value: jsonEncode(orig));
         }
         timer?.cancel();
-        timer = Timer.periodic(const Duration(seconds: 3), (_) async {
-          if (busy || _poll || hw == null) return;
+        tick = 0;
+        timer = Timer.periodic(const Duration(milliseconds: kFastMs), (_) async {
+          if (busy || nqHold || _poll || hw == null) return;
           _poll = true;
           try {
-            await refresh();
+            tick++;
+            if (tick % 6 == 0) {
+              await refresh();
+            } else {
+              await refreshFast(tick % 2 == 0);
+            }
           } catch (_) {}
           _poll = false;
         });
+        unawaited(nq.start());
       });
 
   void startCool(String h) {
@@ -573,6 +614,7 @@ class _H extends State<Home> {
 
   Future<void> logout() async {
     timer?.cancel();
+    nq.reset();
     setState(() {
       hw = null;
       cur = null;
@@ -670,6 +712,38 @@ class _H extends State<Home> {
       final r = await hw!.post('net/reconnect', '<ReconnectAction>1</ReconnectAction>');
       msg = 'رد الراوتر على إعادة الاتصال: ${Huawei.err(r) ?? 'OK'}';
     });
+  }
+
+  Future<void> rebootRouter() async {
+    if (!await confirm('إعادة تشغيل الراوتر؟ ينقطع الإنترنت عن كل الأجهزة من دقيقة إلى دقيقتين، وترجع لقائمة الأجهزة.')) return;
+    await run(() async {
+      String? e;
+      try {
+        e = Huawei.err(await hw!.post('device/control', '<Control>1</Control>'));
+      } on SocketException {
+        e = null;
+      } on HttpException {
+        e = null;
+      }
+      if (e != null) {
+        msg = 'الراوتر رفض إعادة التشغيل (الكود $e).';
+        return;
+      }
+      await logout();
+      msg = 'تم إرسال أمر إعادة التشغيل. انتظر دقيقتين ثم ادخل من جديد.';
+    });
+  }
+
+  Future<void> openRouterPage([String? h]) async {
+    var hv = (h ?? hw?.host ?? (devs.isNotEmpty ? devs.first.host : host.text)).trim();
+    if (hv.isEmpty) hv = '192.168.8.1';
+    final url = Uri.parse('http://$hv/html/quicksetup.html');
+    try {
+      final ok = await launchUrl(url, mode: LaunchMode.externalApplication);
+      if (!ok && mounted) setState(() => msg = 'ما قدرت أفتح المتصفح. افتح الرابط يدويًا: $url');
+    } catch (_) {
+      if (mounted) setState(() => msg = 'ما قدرت أفتح المتصفح. افتح الرابط يدويًا: $url');
+    }
   }
 
   Future<void> doReport() => run(() async {
@@ -909,6 +983,21 @@ class _H extends State<Home> {
           ])));
 
   List<Widget> routerTab() => [
+        card('الراوتر', [
+          FilledButton.icon(
+              style: FilledButton.styleFrom(backgroundColor: Colors.redAccent, foregroundColor: Colors.white),
+              onPressed: busy ? null : rebootRouter,
+              icon: const Icon(Icons.restart_alt),
+              label: const Text('إعادة تشغيل الراوتر')),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+              onPressed: () => openRouterPage(),
+              icon: const Icon(Icons.open_in_browser),
+              label: const Text('فتح صفحة الراوتر')),
+          const SizedBox(height: 4),
+          const Text('فتح صفحة الراوتر قد يطرد جلسة التطبيق (الراوتر يسمح بجلسة دخول وحدة).',
+              style: TextStyle(fontSize: 11, color: Colors.white54)),
+        ]),
         card('الشاشة', [
           SwitchListTile(
               contentPadding: EdgeInsets.zero,
@@ -979,7 +1068,7 @@ class _H extends State<Home> {
         for (final e in [('RSRP', hR, kGreen), ('SINR', hS, Colors.orange)])
           card('${e.$1}  ${e.$2.isEmpty ? '-' : fmt(e.$2.last)}', [
             SizedBox(height: 120, width: double.infinity, child: CustomPaint(painter: _Spark(e.$2, e.$3))),
-            const Text('آخر 6 دقائق تقريبًا', style: TextStyle(fontSize: 11, color: Colors.white54)),
+            const Text('آخر 5 دقائق تقريبًا', style: TextStyle(fontSize: 11, color: Colors.white54)),
           ]),
       ];
 
@@ -1013,11 +1102,14 @@ class _H extends State<Home> {
                       onSelected: (v) {
                         if (v == 'e') {
                           editDev(d);
+                        } else if (v == 'w') {
+                          openRouterPage(d.host);
                         } else {
                           delDev(d);
                         }
                       },
                       itemBuilder: (c) => const [
+                            PopupMenuItem(value: 'w', child: Text('فتح صفحة الراوتر')),
                             PopupMenuItem(value: 'e', child: Text('تعديل')),
                             PopupMenuItem(value: 'd', child: Text('حذف')),
                           ]))),
@@ -1026,6 +1118,11 @@ class _H extends State<Home> {
             onPressed: busy ? null : () => setState(() => adding = true),
             icon: const Icon(Icons.add),
             label: const Text('إضافة جهاز')),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+            onPressed: () => openRouterPage(),
+            icon: const Icon(Icons.open_in_browser),
+            label: const Text('فتح صفحة الراوتر')),
         if (busy) const Padding(padding: EdgeInsets.all(12), child: LinearProgressIndicator()),
         if (msg.isNotEmpty) Padding(padding: const EdgeInsets.all(10), child: SelectableText(msg)),
       ]);
@@ -1077,6 +1174,10 @@ class _H extends State<Home> {
                       diag = await Huawei(host.text.trim()).probe();
                     }),
             child: const Text('فحص الراوتر (بدون كلمة مرور)')),
+        OutlinedButton.icon(
+            onPressed: () => openRouterPage(host.text.trim()),
+            icon: const Icon(Icons.open_in_browser),
+            label: const Text('فتح صفحة الراوتر')),
         if (diag.isNotEmpty) ...[
           OutlinedButton(
               onPressed: () => Clipboard.setData(ClipboardData(text: diag)),
@@ -1105,9 +1206,11 @@ class _H extends State<Home> {
                     overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold))),
             const Spacer(),
             Text(has5 ? '5G' : 'LTE', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: kGreen)),
+            IconButton(onPressed: () => openRouterPage(), icon: const Icon(Icons.open_in_browser), tooltip: 'فتح صفحة الراوتر'),
             IconButton(onPressed: logout, icon: const Icon(Icons.logout), tooltip: 'رجوع لقائمة الأجهزة'),
           ])),
       Container(height: 3, color: kGreen),
+      NetQualityBanner(nq),
       Row(children: [
         tabBtn(0, Icons.cell_tower, 'CELL'),
         tabBtn(1, Icons.router, 'ROUTER'),
