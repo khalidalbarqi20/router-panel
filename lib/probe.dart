@@ -1,3 +1,5 @@
+import 'bands.dart';
+
 /// نتيجة الفحص السريع لنطاق واحد: هل سجّل الراوتر عليه واتصل بالشبكة؟
 class ProbeRes {
   final bool ok, reachable;
@@ -98,5 +100,5 @@ List<int> workingBands(List<BandProbe> ps, {int max = 8}) {
     return (b.res.rsrp ?? -200.0).compareTo(a.res.rsrp ?? -200.0);
   });
   return <int>[for (final p in w.take(max)) p.band];
-}import 'bands.dart';
+}
 
