@@ -1,3 +1,4 @@
+import 'bands.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -13,6 +14,7 @@ import 'modes.dart';
 import 'brand.dart';
 import 'netinfo.dart';
 import 'netquality.dart';
+import 'dbg.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 const _st = FlutterSecureStorage();
@@ -227,11 +229,8 @@ class Dev {
 const AN = {'0': 'مدمج (تلقائي)', '1': 'داخلي', '2': 'خارجي'};
 const kBg = Color(0xFF2E2E2E), kHead = Color(0xFF1B1B1B), kBar = Color(0xFF6E6E6E), kGreen = Color(0xFF39D353);
 
-List<int> bandsOf(String hex) {
-  final m = int.tryParse(hex, radix: 16) ?? 0;
-  return [for (var i = 0; i < 63; i++) if ((m >> i) & 1 == 1) i + 1];
-}
-String maskOf(Iterable<int> b) => b.fold<int>(0, (a, x) => a | (1 << (x - 1))).toRadixString(16);
+List<int> bandsOf(String hex) => bandsOfHex(hex);
+String maskOf(Iterable<int> b) => maskOfBands(b);
 String norm(String h) => h.toLowerCase().replaceFirst(RegExp('^0+'), '');
 double? num_(String? s) {
   final m = RegExp(r'-?\d+(\.\d+)?').firstMatch(s ?? '');
@@ -342,6 +341,8 @@ class _H extends State<Home> {
   Set<int> sel = {};
   List<double> hR = [], hS = [];
   String nb = '3fffffff', msg = '', report = '', isp = '', model = 'ROUTER';
+  String? nrKey;
+  List<int> nrSup = <int>[];
   bool busy = false, remember = true, _poll = false, awake = false;
   String ant = '', antType = '';
   int fails = 0, cool = 0;
@@ -400,7 +401,9 @@ class _H extends State<Home> {
       await _st.delete(key: 'pw');
       await _st.delete(key: 'host');
       if (mounted) setState(() {});
-    } catch (_) {}
+    } catch (e) {
+      dbg('main.dart:404', e);
+    }
   }
 
   Future<void> saveDevs() =>
@@ -436,16 +439,21 @@ class _H extends State<Home> {
     Map<String, String> t = tr;
     try {
       t = Huawei.kv(await hw!.get('monitoring/traffic-statistics'));
-    } catch (_) {}
+    } catch (e) {
+      dbg('main.dart:440', e);
+    }
     Map<String, String> sx = stx;
     try {
       sx = Huawei.kv(await hw!.get('monitoring/status'));
-    } catch (_) {}
+    } catch (e) {
+      dbg('main.dart:444', e);
+    }
     if (!mounted) return;
     setState(() {
       stx = sx;
       sig = Huawei.kv(s);
       nm = Huawei.kv(n);
+      nrKey = findNrKey(nm) ?? nrKey;
       tr = t;
       final r = num_(sig['rsrp']), q = num_(sig['sinr']);
       if (r != null) hR.add(r);
@@ -463,7 +471,9 @@ class _H extends State<Home> {
     if (withTraffic) {
       try {
         t = Huawei.kv(await hw!.get('monitoring/traffic-statistics'));
-      } catch (_) {}
+      } catch (e) {
+      dbg('main.dart:468', e);
+    }
     }
     if (!mounted) return;
     setState(() {
@@ -515,10 +525,13 @@ class _H extends State<Home> {
         modes = RegExp(r'<Access>(\w+)</Access>').allMatches(l).map((m) => m[1]!).toList();
         sup = ({for (final m in RegExp(r'BC(\d+)').allMatches(l)) int.parse(m[1]!)}.toList())..sort();
         nb = RegExp(r'<BandList>.*?<Value>([^<]*)</Value>', dotAll: true).firstMatch(l)?[1] ?? '3fffffff';
+        nrSup = parseNrSupported(l);
         try {
           model = Huawei.tag(await h.get('device/basic_information'), 'devicename');
           isp = Huawei.tag(await h.get('net/current-plmn'), 'FullName');
-        } catch (_) {}
+        } catch (e) {
+      dbg('main.dart:524', e);
+    }
         final cd = cur;
         if (cd != null) {
           if (cd.name.isEmpty) cd.name = model.isEmpty ? hostV : model;
@@ -547,7 +560,9 @@ class _H extends State<Home> {
             } else {
               await refreshFast(tick % 2 == 0);
             }
-          } catch (_) {}
+          } catch (e) {
+      dbg('main.dart:553', e);
+    }
           _poll = false;
         });
         unawaited(nq.start());
@@ -576,7 +591,9 @@ class _H extends State<Home> {
     setState(() => awake = v);
     try {
       v ? await WakelockPlus.enable() : await WakelockPlus.disable();
-    } catch (_) {}
+    } catch (e) {
+      dbg('main.dart:582', e);
+    }
     await _st.write(key: 'awake', value: v ? '1' : '0');
   }
 
@@ -588,7 +605,9 @@ class _H extends State<Home> {
         ant = a;
         antType = t;
       });
-    } catch (_) {}
+    } catch (e) {
+      dbg('main.dart:594', e);
+    }
   }
 
   Future<void> setAntenna(String v) async {
@@ -604,7 +623,8 @@ class _H extends State<Home> {
               ? 'تم تغيير الانتينا وتأكّدت القراءة.'
               : 'الراوتر لم يطبّق التغيير (رد الراوتر: ${note ?? 'OK'}، القيمة الحالية: $ant).';
           return;
-        } catch (_) {
+        } catch (e) {
+      dbg('main.dart:626', e);
           await Future.delayed(const Duration(seconds: 5));
         }
       }
@@ -683,22 +703,10 @@ class _H extends State<Home> {
   }
 
   Future<void> change(String mask, String mode) => run(() async {
-        final r = await hw!.post('net/net-mode',
-            '<NetworkMode>$mode</NetworkMode><NetworkBand>$nb</NetworkBand><LTEBand>$mask</LTEBand>');
-        final note = Huawei.err(r);
-        await Future.delayed(const Duration(seconds: 20));
-        for (var i = 0; i < 8; i++) {
-          try {
-            await hw!.login(_pw!);
-            await refresh(sync: true);
-            final ok = nm['NetworkMode'] == mode && norm(nm['LTEBand'] ?? '') == mask;
-            msg = ok ? 'تم التطبيق وتأكّدت القراءة.' : 'الراوتر لم يطبّق التغيير (رد الراوتر: ${note ?? 'OK'}).';
-            return;
-          } catch (_) {
-            await Future.delayed(const Duration(seconds: 8));
-          }
-        }
-        msg = 'الراوتر لم يرجع بعد. انتظر دقيقة ثم أعد المحاولة.';
+        final r = await setBands(lte: mask, mode: mode);
+        msg = r.ok
+            ? 'تم التطبيق وتأكّدت القراءة.${r.connected ? '' : ' (الاتصال ما رجع بعد، انتظر شوي)'}'
+            : 'الراوتر لم يطبّق التغيير (${r.note.isEmpty ? 'بدون رد' : r.note}).';
       });
 
   Future<void> pickMode(String m) async {
@@ -741,7 +749,8 @@ class _H extends State<Home> {
     try {
       final ok = await launchUrl(url, mode: LaunchMode.externalApplication);
       if (!ok && mounted) setState(() => msg = 'ما قدرت أفتح المتصفح. افتح الرابط يدويًا: $url');
-    } catch (_) {
+    } catch (e) {
+      dbg('main.dart:751', e);
       if (mounted) setState(() => msg = 'ما قدرت أفتح المتصفح. افتح الرابط يدويًا: $url');
     }
   }
@@ -764,49 +773,99 @@ class _H extends State<Home> {
       });
 
   // ---------- وضع الألعاب ----------
-  /// يطبّق النطاق والوضع ويتأكد بالقراءة (بدون واجهة، تستعمله صفحة الألعاب).
-  Future<bool> applyQuiet(String mask, String mode) async {
-    final body = '<NetworkMode>$mode</NetworkMode><NetworkBand>$nb</NetworkBand><LTEBand>$mask</LTEBand>';
+  /// المصدر الوحيد لإرسال net/net-mode: الوضع + نطاقات 4G (hex) + نطاقات 5G إن وُجدت (nr بصيغة الراوتر الفعلية).
+  /// يرجع null إذا انرسل بدون خطأ، أو سبب الفشل. اسم حقل 5G يؤخذ من رد الراوتر ولا يُخمَّن.
+  Future<String?> sendBands({String? nr, String? lte, required String mode}) async {
+    final lm = lte ?? norm(nm['LTEBand'] ?? '');
+    final b = StringBuffer('<NetworkMode>$mode</NetworkMode><NetworkBand>$nb</NetworkBand><LTEBand>$lm</LTEBand>');
+    if (nr != null) {
+      final k = nrKey;
+      if (k == null) return 'ما لقيت حقل نطاقات 5G في رد الراوتر.';
+      b.write('<$k>$nr</$k>');
+    }
+    final body = b.toString();
     try {
       await hw!.login(_pw!);
-    } catch (_) {}
+    } catch (e) {
+      dbg('sendBands.login', e);
+    }
     try {
-      await hw!.post('net/net-mode', body);
-    } catch (_) {
+      final er = Huawei.err(await hw!.post('net/net-mode', body));
+      return er == null ? null : 'رد الراوتر: $er';
+    } catch (e) {
+      dbg('sendBands.post', e);
       try {
         await hw!.login(_pw!);
-        await hw!.post('net/net-mode', body);
-      } catch (_) {}
+        final er = Huawei.err(await hw!.post('net/net-mode', body));
+        return er == null ? null : 'رد الراوتر: $er';
+      } catch (e2) {
+        dbg('sendBands.retry', e2);
+        return 'خطأ شبكة: $e2';
+      }
     }
-    await Future.delayed(const Duration(seconds: 20));
-    for (var i = 0; i < 8; i++) {
+  }
+
+  /// يطبّق ويتأكد بالقراءة، وينتظر رجوع الاتصال (حتى 90 ثانية) بدل مهلة ثابتة.
+  Future<SetRes> setBands({String? nr, String? lte, required String mode}) async {
+    final lm = lte ?? norm(nm['LTEBand'] ?? '');
+    final sent = await sendBands(nr: nr, lte: lte, mode: mode);
+    if (sent != null && sent.startsWith('ما لقيت')) return SetRes(false, false, sent);
+    await Future.delayed(const Duration(seconds: 3));
+    final sw = Stopwatch()..start();
+    var applied = false, reached = false;
+    while (sw.elapsed < const Duration(seconds: 90)) {
       try {
         await hw!.login(_pw!);
         await refresh(sync: true);
-        return nm['NetworkMode'] == mode && norm(nm['LTEBand'] ?? '') == mask;
-      } catch (_) {
-        await Future.delayed(const Duration(seconds: 8));
+        reached = true;
+        applied = nm['NetworkMode'] == mode &&
+            norm(nm['LTEBand'] ?? '') == norm(lm) &&
+            (nr == null || (nrKey != null && sameBands(nm[nrKey!] ?? '', nr)));
+        if (applied) {
+          final cs = stx['ConnectionStatus'];
+          if (cs == null || cs == '901') return SetRes(true, true, '');
+        }
+      } catch (e) {
+        dbg('setBands.poll', e);
       }
+      await Future.delayed(const Duration(seconds: 3));
     }
-    return false;
+    if (applied) return SetRes(true, false, 'طُبّق لكن الاتصال ما رجع خلال 90 ثانية.');
+    return SetRes(false, false, !reached ? 'الراوتر ما ردّ خلال 90 ثانية.' : (sent ?? 'الراوتر ما طبّق التغيير.'));
   }
+
+  Future<bool> applyQuiet(String mask, String mode) async {
+    final r = await setBands(lte: mask, mode: mode);
+    return r.ok && r.connected;
+  }
+
+  /// قراءة خام من الراوتر (مع إعادة تسجيل الدخول مرة وحدة عند الفشل).
+  Future<String> rawGetQ(String path) async {
+    try {
+      return await hw!.get(path);
+    } catch (e) {
+      dbg('rawGet.$path', e);
+      await hw!.login(_pw!);
+      return await hw!.get(path);
+    }
+  }
+
   /// فحص سريع: هل يسجّل الراوتر على هذا النطاق ويتصل بالشبكة؟ (بدون قياسات ثقيلة)
-  Future<ProbeRes> probeQuiet(String mask, String mode) async {
+  /// إذا [nr] موجود (قيمة نطاقات 5G بصيغة الراوتر) يتحقق من nrband وnrrsrp من device/signal.
+  Future<ProbeRes> probeQuiet(String mask, String mode, {String? nr}) async {
     final sw = Stopwatch()..start();
     final want = bandsOf(mask);
-    final body = '<NetworkMode>$mode</NetworkMode><NetworkBand>$nb</NetworkBand><LTEBand>$mask</LTEBand>';
+    final wantNr = nr == null ? <int>{} : decodeBands(nr);
     var reached = false;
     try {
       await hw!.login(_pw!);
       reached = true;
-    } catch (_) {}
-    try {
-      await hw!.post('net/net-mode', body);
-    } catch (_) {
-      try {
-        await hw!.login(_pw!);
-        await hw!.post('net/net-mode', body);
-      } catch (_) {}
+    } catch (e) {
+      dbg('probe.login', e);
+    }
+    final sent = await sendBands(nr: nr, lte: mask, mode: mode);
+    if (sent != null && sent.startsWith('ما لقيت')) {
+      return ProbeRes(false, reached, '', null, null, sw.elapsed.inSeconds, sent);
     }
     await Future.delayed(const Duration(seconds: 5));
     var good = 0;
@@ -822,16 +881,23 @@ class _H extends State<Home> {
         try {
           stm = Huawei.kv(await hw!.get('monitoring/status'));
           connected = stm['ConnectionStatus'] == '901';
-        } catch (_) {}
+        } catch (e) {
+          dbg('probe.status', e);
+        }
         final b = num_(s['band'])?.toInt();
-        final r = num_(s['rsrp']);
-        lastBand = b == null ? '' : 'B$b';
-        final applied = norm(n['LTEBand'] ?? '') == norm(mask) && n['NetworkMode'] == mode;
+        final nrb = nrBandNum(s);
+        lastBand = nr == null ? (b == null ? '' : 'B$b') : (nrb == null ? '' : 'n$nrb');
+        var applied = norm(n['LTEBand'] ?? '') == norm(mask) && n['NetworkMode'] == mode;
+        if (nr != null) applied = applied && nrKey != null && sameBands(n[nrKey!] ?? '', nr);
         if (applied) everApplied = true;
-        if (applied && connected && b != null && want.contains(b)) {
+        final bandOk = nr == null
+            ? (b != null && want.contains(b))
+            : (nrb != null && wantNr.contains(nrb) && hasNrSignal(s) && (want.isEmpty || b == null || want.contains(b)));
+        if (applied && connected && bandOk) {
           good++;
           if (good >= 2) {
-            return ProbeRes(true, true, 'B$b', r, num_(s['sinr']), sw.elapsed.inSeconds, '',
+            return ProbeRes(true, true, lastBand, nr == null ? num_(s['rsrp']) : num_(s['nrrsrp']),
+                nr == null ? num_(s['sinr']) : num_(s['nrsinr']), sw.elapsed.inSeconds, '',
                 cell: s['cell_id'] ?? '',
                 pci: s['pci'] ?? '',
                 earfcn: s['earfcn'] ?? s['dlearfcn'] ?? s['ltedlfreq'] ?? '',
@@ -840,14 +906,21 @@ class _H extends State<Home> {
         } else {
           good = 0;
         }
-      } catch (_) {
+      } catch (e) {
+        dbg('probe.poll', e);
         try {
           await hw!.login(_pw!);
-        } catch (_) {}
+        } catch (e2) {
+          dbg('probe.relogin', e2);
+        }
       }
       await Future.delayed(const Duration(seconds: 3));
     }
-    final why = !reached ? 'الراوتر ما ردّ' : (!everApplied ? 'الراوتر ما قبل هذا النطاق (غير مدعوم؟)' : (lastBand.isEmpty ? 'ما سجّل على أي نطاق' : 'بقي على $lastBand'));
+    final why = !reached
+        ? 'الراوتر ما ردّ'
+        : (!everApplied
+            ? 'الراوتر ما قبل هذا النطاق (غير مدعوم؟)'
+            : (lastBand.isEmpty ? 'ما سجّل على أي نطاق' : 'بقي على $lastBand'));
     return ProbeRes(false, reached, lastBand, null, null, sw.elapsed.inSeconds, why);
   }
   /// حالة الراوتر: الإشارة + الحالة العامة (الحقول المأخوذة من الحالة تبدأ بـ st_).
@@ -856,7 +929,9 @@ class _H extends State<Home> {
     var st = <String, String>{};
     try {
       st = Huawei.kv(await hw!.get('monitoring/status'));
-    } catch (_) {}
+    } catch (e) {
+      dbg('main.dart:914', e);
+    }
     return <String, String>{...s, for (final e in st.entries) 'st_${e.key}': e.value};
   }
 
@@ -870,14 +945,18 @@ class _H extends State<Home> {
       for (final h in parse(await hw!.get('wlan/host-list'))) {
         out[h['MacAddress'] ?? h['IpAddress'] ?? '${out.length}'] = <String, String>{...h, '_t': 'wifi'};
       }
-    } catch (_) {}
+    } catch (e) {
+      dbg('main.dart:928', e);
+    }
     try {
       for (final h in parse(await hw!.get('lan/HostInfo'))) {
         if ((h['Active'] ?? '1') == '0') continue;
         out.putIfAbsent(h['MacAddress'] ?? h['IpAddress'] ?? '${out.length}',
             () => <String, String>{...h, '_t': (h['InterfaceType'] ?? '').toLowerCase().contains('wi') ? 'wifi' : 'lan'});
       }
-    } catch (_) {}
+    } catch (e) {
+      dbg('main.dart:935', e);
+    }
     return out.values.toList();
   }
 
@@ -892,6 +971,10 @@ class _H extends State<Home> {
         keepAwake: awake,
         snap: snapQuiet,
         hosts: hostsQuiet,
+        setBands: setBands,
+        rawGet: rawGetQ,
+        nrKeyOf: () => nrKey,
+        nrSup: List<int>.from(nrSup),
         scanList: (<int>{...sup, ...kSaudiBands}.toList()..sort()),
       );
 
@@ -905,7 +988,9 @@ class _H extends State<Home> {
     }
     try {
       await refresh(sync: true);
-    } catch (_) {}
+    } catch (e) {
+      dbg('main.dart:967', e);
+    }
   }
 
   // ---------- واجهة ----------

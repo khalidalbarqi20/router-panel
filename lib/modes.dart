@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'download.dart';
 import 'game.dart';
 import 'netinfo.dart';
+import 'nr.dart';
 import 'pubg.dart';
 
 /// صفحة المودات: تجمع وضع الألعاب ووضع التنزيل ووضع ببجي.
@@ -26,6 +27,8 @@ class ModesHub extends StatelessWidget {
         body: ListView(padding: const EdgeInsets.all(12), children: [
           _tile(context, Icons.cell_tower, 'الشبكة والنطاقات',
               'الأبراج، تجميع النطاقات +، الأجهزة المتصلة، اختبار قصير وفحص شامل', NetInfoPage(ctl: ctl)),
+          _tile(context, Icons.hub, '5G والدمج',
+              'قفل نطاق 5G أو دمج نطاقات 5G مع 4G، ملفات لكل شريحة، واختبار كل نطاق', NrPage(ctl: ctl)),
           _tile(context, Icons.sports_esports, 'وضع الألعاب',
               'أقل بنق وتذبذب وفقد حزم (فورتنايت)', GamePage(ctl: ctl)),
           _tile(context, Icons.smartphone, 'وضع ببجي (واي فاي)',

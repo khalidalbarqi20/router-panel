@@ -1,3 +1,5 @@
+import 'dbg.dart';
+import 'bands.dart';
 import 'package:flutter/material.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'game.dart';
@@ -7,12 +9,9 @@ import 'probe.dart';
 
 const Color _green = Color(0xFF39D353);
 
-List<int> _bandsOf(String hex) {
-  final m = int.tryParse(hex, radix: 16) ?? 0;
-  return <int>[for (var i = 0; i < 63; i++) if ((m >> i) & 1 == 1) i + 1];
-}
+List<int> _bandsOf(String hex) => bandsOfHex(hex);
 
-String _maskOf(Iterable<int> b) => b.fold<int>(0, (a, x) => a | (1 << (x - 1))).toRadixString(16);
+String _maskOf(Iterable<int> b) => maskOfBands(b);
 
 String _f1(double? v) => v == null ? '-' : v.toStringAsFixed(1);
 
@@ -153,7 +152,9 @@ class _DownState extends State<DownloadPage> {
     });
     try {
       await WakelockPlus.enable();
-    } catch (_) {}
+    } catch (e) {
+      dbg('download.dart:154', e);
+    }
     try {
       await _scan(baseMask, baseMode);
     } catch (e) {
@@ -162,7 +163,9 @@ class _DownState extends State<DownloadPage> {
     if (!widget.ctl.keepAwake) {
       try {
         await WakelockPlus.disable();
-      } catch (_) {}
+      } catch (e) {
+      dbg('download.dart:163', e);
+    }
     }
     _set(() {
       running = false;

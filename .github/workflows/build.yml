@@ -23,9 +23,9 @@ jobs:
           for G in app/android/app/build.gradle app/android/app/build.gradle.kts; do
             [ -f "$G" ] && sed -i -E 's/minSdk = flutter.minSdkVersion/minSdk = 24/; s/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/' "$G" || true
           done
-          sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET"/><application|' $M
-          sed -i 's|<application|<uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/><uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/><uses-permission android:name="android.permission.CHANGE_WIFI_STATE"/><application|' $M
-          sed -i 's|<application|<application android:usesCleartextTraffic="true"|' $M
+          cp -f android_src/AndroidManifest.xml $M
+          mkdir -p app/android/app/src/main/res/xml
+          cp -f android_src/network_security_config.xml app/android/app/src/main/res/xml/network_security_config.xml
       - name: Build
         working-directory: app
         run: |

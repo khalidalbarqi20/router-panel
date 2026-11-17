@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- HTTP الصريح ممنوع إلا لعناوين الراوتر المعروفة (الراوتر ما يدعم HTTPS). لو راوترك بعنوان ثاني أضفه هنا. -->
+    <base-config cleartextTrafficPermitted="false"/>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">192.168.8.1</domain>
+        <domain includeSubdomains="false">192.168.0.1</domain>
+        <domain includeSubdomains="false">192.168.1.1</domain>
+        <domain includeSubdomains="false">192.168.2.1</domain>
+        <domain includeSubdomains="false">192.168.3.1</domain>
+        <domain includeSubdomains="false">192.168.10.1</domain>
+        <domain includeSubdomains="false">192.168.100.1</domain>
+        <domain includeSubdomains="false">192.168.254.254</domain>
+        <domain includeSubdomains="false">10.0.0.1</domain>
+        <domain includeSubdomains="false">172.16.0.1</domain>
+        <domain includeSubdomains="false">mobile.hotspot</domain>
+    </domain-config>
+</network-security-config>

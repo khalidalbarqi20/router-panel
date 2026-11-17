@@ -1,3 +1,4 @@
+import 'dbg.dart';
 import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
@@ -166,7 +167,9 @@ class _PubgState extends State<PubgPage> {
     });
     try {
       await WakelockPlus.enable();
-    } catch (_) {}
+    } catch (e) {
+      dbg('pubg.dart:169', e);
+    }
     try {
       await _runAll(ids);
     } catch (e) {
@@ -174,7 +177,9 @@ class _PubgState extends State<PubgPage> {
     }
     try {
       await WakelockPlus.disable();
-    } catch (_) {}
+    } catch (e) {
+      dbg('pubg.dart:177', e);
+    }
     _set(() {
       for (final r in res.values) {
         if (r.st == St.running) r.st = St.idle;
@@ -441,7 +446,9 @@ class _PubgState extends State<PubgPage> {
       try {
         await InternetAddress.lookup(h).timeout(const Duration(seconds: 5));
         dns.add(sw.elapsedMilliseconds);
-      } catch (_) {}
+      } catch (e) {
+      dbg('pubg.dart:444', e);
+    }
     }
     if (dns.isEmpty) {
       st = St.bad;

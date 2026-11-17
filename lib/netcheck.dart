@@ -1,3 +1,4 @@
+import 'dbg.dart';
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -8,7 +9,8 @@ Future<bool> _tcp(String ip, int port) async {
     final s = await Socket.connect(ip, port, timeout: const Duration(seconds: 3));
     s.destroy();
     return true;
-  } catch (_) {
+  } catch (e) {
+      dbg('netcheck.dart:11', e);
     return false;
   }
 }
@@ -20,7 +22,8 @@ Future<String> netDiag() async {
   try {
     final l = await InternetAddress.lookup('example.com').timeout(const Duration(seconds: 5));
     if (l.isEmpty) return 'DNS لا يردّ';
-  } catch (_) {
+  } catch (e) {
+      dbg('netcheck.dart:23', e);
     return 'DNS لا يعمل (الاتصال موجود لكن أسماء المواقع ما تُحل)';
   }
   return 'OK';

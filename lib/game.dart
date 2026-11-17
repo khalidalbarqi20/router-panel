@@ -1,3 +1,5 @@
+import 'dbg.dart';
+import 'bands.dart';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -8,6 +10,13 @@ import 'probe.dart';
 
 const Color _green = Color(0xFF39D353);
 
+/// نتيجة setBands: ok = الراوتر طبّق وقرأنا القيم، connected = رجع الاتصال.
+class SetRes {
+  final bool ok, connected;
+  final String note;
+  const SetRes(this.ok, this.connected, this.note);
+}
+
 /// ما تحتاجه صفحة الألعاب من التطبيق الرئيسي.
 class GameCtl {
   final String routerHost;
@@ -16,11 +25,15 @@ class GameCtl {
   final String Function() curMask;
   final String Function() curMode;
   final Future<bool> Function(String mask, String mode) apply;
-  final Future<ProbeRes> Function(String mask, String mode) probe;
+  final Future<ProbeRes> Function(String mask, String mode, {String? nr}) probe;
   final bool keepAwake;
   final Future<Map<String, String>> Function()? snap;
   final Future<List<Map<String, String>>> Function()? hosts;
   final List<int> scanList;
+  final Future<SetRes> Function({String? lte, String? nr, required String mode})? setBands;
+  final Future<String> Function(String path)? rawGet;
+  final String? Function()? nrKeyOf;
+  final List<int> nrSup;
   List<int> get scan => scanList.isNotEmpty ? scanList : sup;
   GameCtl({
     required this.routerHost,
@@ -34,6 +47,10 @@ class GameCtl {
     this.snap,
     this.hosts,
     this.scanList = const <int>[],
+    this.setBands,
+    this.rawGet,
+    this.nrKeyOf,
+    this.nrSup = const <int>[],
   });
 }
 
@@ -49,12 +66,9 @@ const List<GameTarget> kFortniteTargets = <GameTarget>[
   GameTarget('مومباي', 'ping-mum.ds.on.epicgames.com'),
 ];
 
-List<int> _bandsOf(String hex) {
-  final m = int.tryParse(hex, radix: 16) ?? 0;
-  return <int>[for (var i = 0; i < 63; i++) if ((m >> i) & 1 == 1) i + 1];
-}
+List<int> _bandsOf(String hex) => bandsOfHex(hex);
 
-String _maskOf(Iterable<int> b) => b.fold<int>(0, (a, x) => a | (1 << (x - 1))).toRadixString(16);
+String _maskOf(Iterable<int> b) => maskOfBands(b);
 
 String _f0(double? v) => v == null ? '-' : v.toStringAsFixed(0);
 
@@ -247,7 +261,9 @@ class _GameState extends State<GamePage> {
     });
     try {
       await WakelockPlus.enable();
-    } catch (_) {}
+    } catch (e) {
+      dbg('game.dart:263', e);
+    }
     try {
       await _scan(baseMask, baseMode);
     } catch (e) {
@@ -256,7 +272,9 @@ class _GameState extends State<GamePage> {
     if (!widget.ctl.keepAwake) {
       try {
         await WakelockPlus.disable();
-      } catch (_) {}
+      } catch (e) {
+      dbg('game.dart:272', e);
+    }
     }
     _set(() {
       running = false;

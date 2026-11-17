@@ -1,3 +1,4 @@
+import 'dbg.dart';
 import 'package:flutter/services.dart';
 
 const MethodChannel _ch = MethodChannel('router_panel/wifi');
@@ -52,7 +53,8 @@ class Ap {
 Future<bool> wifiPerm({bool ask = true}) async {
   try {
     return (await _ch.invokeMethod<bool>('perm', <String, dynamic>{'ask': ask})) ?? false;
-  } catch (_) {
+  } catch (e) {
+      dbg('wifi.dart:56', e);
     return false;
   }
 }
@@ -63,7 +65,8 @@ Future<WifiLink?> wifiLink() async {
     if (m == null) return null;
     return WifiLink(_i(m['rssi']), _i(m['speed']), _i(m['freq']), _i(m['rx']), _i(m['tx']),
         _i(m['std']), '${m['ssid'] ?? ''}', '${m['bssid'] ?? ''}');
-  } catch (_) {
+  } catch (e) {
+      dbg('wifi.dart:67', e);
     return null;
   }
 }
@@ -72,7 +75,9 @@ Future<WifiLink?> wifiLink() async {
 Future<List<Ap>> wifiScan() async {
   try {
     await _ch.invokeMethod<bool>('startScan');
-  } catch (_) {}
+  } catch (e) {
+      dbg('wifi.dart:75', e);
+    }
   await Future<void>.delayed(const Duration(seconds: 4));
   try {
     final l = await _ch.invokeMethod<List<dynamic>>('results');
@@ -83,7 +88,8 @@ Future<List<Ap>> wifiScan() async {
       out.add(Ap('${m['ssid'] ?? ''}', '${m['bssid'] ?? ''}', _i(m['level']), _i(m['freq']), _i(m['width'])));
     }
     return out;
-  } catch (_) {
+  } catch (e) {
+      dbg('wifi.dart:89', e);
     return <Ap>[];
   }
 }

@@ -1,3 +1,4 @@
+import 'dbg.dart';
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
@@ -70,7 +71,8 @@ class PingEngine {
       final m = RegExp(r'time[=<]\s*([0-9]+(?:\.[0-9]+)?)').firstMatch(text);
       if (m == null) return null;
       return double.parse(m[1]!);
-    } catch (_) {
+    } catch (e) {
+      dbg('measure.dart:74', e);
       return null;
     }
   }
@@ -97,7 +99,8 @@ class Pinger {
       if (pick == null && l.isNotEmpty) pick = l.first;
       addr = pick;
       return pick != null;
-    } catch (_) {
+    } catch (e) {
+      dbg('measure.dart:101', e);
       return false;
     }
   }
@@ -121,7 +124,8 @@ class Pinger {
       // ECONNREFUSED = وصل رد الرفض من الطرف الثاني، فالزمن صالح كقياس.
       if (e.osError?.errorCode == 111) return sw.elapsedMicroseconds / 1000.0;
       return null;
-    } catch (_) {
+    } catch (e) {
+      dbg('measure.dart:125', e);
       return null;
     }
   }
@@ -142,7 +146,7 @@ class Pinger {
 
 /// تحميل (تنزيل) لمدة محددة لإحداث ضغط على الخط. يرجع عدد البايتات المستلمة.
 Future<int> loadDown(Duration d, bool Function() stop) async {
-  final c = HttpClient()..connectionTimeout = const Duration(seconds: 6);
+  final c = HttpClient()..connectionTimeout = const Duration(seconds: 10);
   final end = DateTime.now().add(d);
   var bytes = 0;
   try {
@@ -154,8 +158,9 @@ Future<int> loadDown(Duration d, bool Function() stop) async {
         if (!DateTime.now().isBefore(end) || stop()) break;
       }
     }
-  } catch (_) {
-  } finally {
+  } catch (e) {
+      dbg('measure.dart:157', e);
+    } finally {
     c.close(force: true);
   }
   return bytes;
@@ -163,7 +168,7 @@ Future<int> loadDown(Duration d, bool Function() stop) async {
 
 /// رفع لمدة محددة. يرجع عدد البايتات المرسلة.
 Future<int> loadUp(Duration d, bool Function() stop) async {
-  final c = HttpClient()..connectionTimeout = const Duration(seconds: 6);
+  final c = HttpClient()..connectionTimeout = const Duration(seconds: 10);
   final end = DateTime.now().add(d);
   var bytes = 0;
   try {
@@ -177,7 +182,8 @@ Future<int> loadUp(Duration d, bool Function() stop) async {
       bytes += buf.length;
     }
     c.close(force: true);
-  } catch (_) {
+  } catch (e) {
+      dbg('measure.dart:182', e);
     c.close(force: true);
   }
   return bytes;
@@ -191,9 +197,10 @@ class DownSrc {
 
 const List<DownSrc> kDownSrcs = <DownSrc>[
   DownSrc('Cloudflare', 'https://speed.cloudflare.com/__down?bytes=25000000'),
+  DownSrc('Google', 'https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb'),
   DownSrc('CacheFly', 'https://cachefly.cachefly.net/100mb.test'),
   DownSrc('OVH', 'https://proof.ovh.net/files/100Mb.dat'),
-  DownSrc('ThinkBroadband', 'http://ipv4.download.thinkbroadband.com/100MB.zip'),
+  DownSrc('ThinkBroadband', 'https://ipv4.download.thinkbroadband.com/100MB.zip'),
 ];
 
 /// الرابط المعتمد بعد اختيار المصدر.
@@ -201,11 +208,11 @@ String gDownUrl = 'https://speed.cloudflare.com/__down?bytes=25000000';
 
 /// يجرّب رابطًا لمدة ثوانٍ قليلة: يرجع OK إذا نزل بيانات كافية، وإلا سبب الفشل.
 Future<String> tryDownUrl(String url, bool Function() stop) async {
-  final c = HttpClient()..connectionTimeout = const Duration(seconds: 6);
+  final c = HttpClient()..connectionTimeout = const Duration(seconds: 10);
   var bytes = 0;
   try {
-    final req = await c.getUrl(Uri.parse(url)).timeout(const Duration(seconds: 8));
-    final res = await req.close().timeout(const Duration(seconds: 8));
+    final req = await c.getUrl(Uri.parse(url)).timeout(const Duration(seconds: 15));
+    final res = await req.close().timeout(const Duration(seconds: 15));
     if (res.statusCode != 200) return 'HTTP ${res.statusCode}';
     final sw = Stopwatch()..start();
     await for (final chunk in res) {
@@ -222,15 +229,21 @@ Future<String> tryDownUrl(String url, bool Function() stop) async {
 
 /// يختار أول مصدر يشتغل ويحفظه في gDownUrl. يرجع اسمه، أو نصًا فارغًا إن فشلت كلها.
 Future<String> pickDownSource(void Function(String) log, bool Function() stop) async {
-  for (final s in kDownSrcs) {
-    if (stop()) break;
-    final r = await tryDownUrl(s.url, stop);
-    if (r == 'OK') {
-      gDownUrl = s.url;
-      log('مصدر التنزيل: ${s.name}');
-      return s.name;
+  for (var round = 0; round < 3 && !stop(); round++) {
+    if (round > 0) {
+      log('ما اشتغل أي مصدر، ينتظر رجوع الاتصال ويعيد المحاولة ($round/2)...');
+      await Future<void>.delayed(const Duration(seconds: 6));
     }
-    log('${s.name}: $r');
+    for (final s in kDownSrcs) {
+      if (stop()) break;
+      final r = await tryDownUrl(s.url, stop);
+      if (r == 'OK') {
+        gDownUrl = s.url;
+        log('مصدر التنزيل: ${s.name}');
+        return s.name;
+      }
+      log('${s.name}: $r');
+    }
   }
   return '';
 }
@@ -257,15 +270,15 @@ Future<Tput> measureDown(bool Function() stop, {int conns = 4, int secs = 8, int
 
   Future<void> worker(int id) async {
     if (id > 0) await Future<void>.delayed(Duration(milliseconds: 300 * id));
-    final c = HttpClient()..connectionTimeout = const Duration(seconds: 6);
+    final c = HttpClient()..connectionTimeout = const Duration(seconds: 10);
     var ui = 0, fails = 0;
     try {
       while (sw.elapsed < end && !stop() && fails < 4) {
         final url = urls[ui % urls.length];
         var got = 0;
         try {
-          final req = await c.getUrl(Uri.parse(url)).timeout(const Duration(seconds: 8));
-          final res = await req.close().timeout(const Duration(seconds: 8));
+          final req = await c.getUrl(Uri.parse(url)).timeout(const Duration(seconds: 15));
+          final res = await req.close().timeout(const Duration(seconds: 15));
           if (res.statusCode != 200) {
             if (note.isEmpty) note = 'HTTP ${res.statusCode}';
             fails++;

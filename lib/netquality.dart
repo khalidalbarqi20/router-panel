@@ -1,3 +1,4 @@
+import 'dbg.dart';
 import 'dart:async';
 import 'dart:io';
 import 'dart:math';
@@ -89,7 +90,9 @@ Future<_Dl> _dlTest({
               if (end || stop()) break;
             }
           }
-        } catch (_) {}
+        } catch (e) {
+      dbg('netquality.dart:92', e);
+    }
         if (got > 0) {
           fails = 0;
         } else {
@@ -485,7 +488,9 @@ class NqController extends ChangeNotifier {
       try {
         final f = g.snap;
         if (f != null) sn = await f();
-      } catch (_) {}
+      } catch (e) {
+      dbg('netquality.dart:488', e);
+    }
 
       stage = 'يرجّع إعدادك الأصلي...';
       _notify();
@@ -516,7 +521,9 @@ class NqController extends ChangeNotifier {
       if (changed && !restored) {
         try {
           restored = await g.apply(curMask, curMode);
-        } catch (_) {}
+        } catch (e) {
+      dbg('netquality.dart:519', e);
+    }
       }
       lines.add(restored
           ? 'تم إرجاع إعدادك الأصلي.'

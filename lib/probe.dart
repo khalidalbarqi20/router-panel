@@ -29,7 +29,7 @@ class BandProbe {
   BandProbe(this.band, this.res);
 }
 
-String maskOne(int b) => (1 << (b - 1)).toRadixString(16);
+String maskOne(int b) => maskOneBand(b);
 
 /// المرحلة 1: يجرّب كل نطاق بسرعة ويسجّل الشغّال منها.
 /// - إذا ما ردّ الراوتر أثناء نطاق: ينتظر ويعيد المحاولة مرة، ولا يوقف الفحص إلا بعد 4 نطاقات متتالية.
@@ -98,4 +98,5 @@ List<int> workingBands(List<BandProbe> ps, {int max = 8}) {
     return (b.res.rsrp ?? -200.0).compareTo(a.res.rsrp ?? -200.0);
   });
   return <int>[for (final p in w.take(max)) p.band];
-}
+}import 'bands.dart';
+

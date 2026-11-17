@@ -1,3 +1,5 @@
+import 'dbg.dart';
+import 'bands.dart';
 import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/material.dart';
@@ -56,7 +58,7 @@ String _netType(String t) {
 bool _snapCa(Map<String, String> m) =>
     isCaMap(<String, String>{'CurrentNetworkTypeEx': m['st_CurrentNetworkTypeEx'] ?? ''}, m);
 
-String _maskOf(Iterable<int> b) => b.fold<int>(0, (a, x) => a | (1 << (x - 1))).toRadixString(16);
+String _maskOf(Iterable<int> b) => maskOfBands(b);
 
 String _f(double? v) => v == null ? '-' : v.toStringAsFixed(0);
 
@@ -126,11 +128,15 @@ class _NIState extends State<NetInfoPage> {
     try {
       final f = widget.ctl.snap;
       if (f != null) s = await f();
-    } catch (_) {}
+    } catch (e) {
+      dbg('netinfo.dart:130', e);
+    }
     try {
       final f = widget.ctl.hosts;
       if (f != null) h = await f();
-    } catch (_) {}
+    } catch (e) {
+      dbg('netinfo.dart:134', e);
+    }
     _set(() {
       snap = s;
       hosts = h;
@@ -164,13 +170,17 @@ class _NIState extends State<NetInfoPage> {
     });
     try {
       await WakelockPlus.enable();
-    } catch (_) {}
+    } catch (e) {
+      dbg('netinfo.dart:168', e);
+    }
   }
 
   Future<void> _end(String msg) async {
     try {
       await WakelockPlus.disable();
-    } catch (_) {}
+    } catch (e) {
+      dbg('netinfo.dart:174', e);
+    }
     _set(() {
       running = false;
       step = cancel ? 'أُوقف' : msg;
@@ -362,7 +372,9 @@ class _NIState extends State<NetInfoPage> {
           c.ca = _snapCa(m);
           c.cell = _g(m, <String>['cell_id']);
         }
-      } catch (_) {}
+      } catch (e) {
+      dbg('netinfo.dart:366', e);
+    }
       final s = await target.series(40, gapMs: 120, stop: stop);
       final rr = await r.series(15, gapMs: 100, stop: stop);
       c.t = s;
@@ -424,14 +436,18 @@ class _NIState extends State<NetInfoPage> {
           if (b != null && v is int && (v == 1 || v == 2)) roles[b] = v;
         });
       });
-    } catch (_) {}
+    } catch (e) {
+      dbg('netinfo.dart:428', e);
+    }
   }
 
   Future<void> _saveRoles() async {
     try {
       await _store.write(
           key: 'band_roles', value: jsonEncode(<String, int>{for (final e in roles.entries) '${e.key}': e.value}));
-    } catch (_) {}
+    } catch (e) {
+      dbg('netinfo.dart:435', e);
+    }
   }
 
   void _cycle(int b) {
