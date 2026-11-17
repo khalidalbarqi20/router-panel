@@ -1,5 +1,6 @@
 import 'bands.dart';
 import 'dart:async';
+import 'kibandlock.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -978,6 +979,23 @@ class _H extends State<Home> {
         scanList: (<int>{...sup, ...kSaudiBands}.toList()..sort()),
       );
 
+  Future<void> openKiBands() async {
+    if (busy || hw == null) return;
+    setState(() => busy = true);
+    try {
+      await Navigator.of(context).push(MaterialPageRoute<void>(
+          builder: (c) => KiBandLock(
+              rd: (p) => hw!.get(p),
+              wr: (p, x) => hw!.post(p, x),
+              relogin: () => hw!.login(_pw!))));
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+    try {
+      await refresh(sync: true);
+    } catch (_) {}
+  }
+
   Future<void> openGame() async {
     if (busy || hw == null) return;
     setState(() => busy = true);
@@ -1068,6 +1086,12 @@ class _H extends State<Home> {
           ])));
 
   List<Widget> routerTab() => [
+        card('قفل النطاقات', [
+          FilledButton.icon(
+              onPressed: busy ? null : openKiBands,
+              icon: const Icon(Icons.lock),
+              label: const Text('قفل نطاقات 5G و 4G')),
+        ]),
         card('الراوتر', [
           FilledButton.icon(
               style: FilledButton.styleFrom(backgroundColor: Colors.redAccent, foregroundColor: Colors.white),
