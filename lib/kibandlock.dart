@@ -165,6 +165,14 @@ class _KiBandLockState extends State<KiBandLock> {
     if (mounted) setState(() => busy = false);
   }
 
+  /// الراوتر يرجّع NetworkBand=0 في القراءة لكنه يرفضه عند الكتابة (كود 100006)، فنستبدله بقيمة All bands.
+  void _fixNb(Map<String, String> m) {
+    final cur = m['NetworkBand'] ?? '';
+    if (cur.isEmpty || RegExp(r'^0+$').hasMatch(cur)) {
+      m['NetworkBand'] = RegExp(r'<Band>.*?<Value>([0-9a-fA-F]+)</Value>', dotAll: true).firstMatch(listRaw)?[1] ?? '3fffffff';
+    }
+  }
+
   /// يبني جسم الطلب: كل حقول النطاق والوضع من قراءة الراوتر، مع استبدال ماسك 4G و5G.
   Map<String, String> _body(Set<int> l, Set<int> n, {bool withNr = true}) {
     final out = <String, String>{};
@@ -173,6 +181,7 @@ class _KiBandLockState extends State<KiBandLock> {
       if (k.contains('band') || k.contains('mode')) out[e.key] = e.value;
     }
     out['LTEBand'] = _hexOf(l, orig['LTEBand'] ?? '');
+    _fixNb(out);
     if (withNr && nrKey != null && nrOk) out[nrKey!] = _hexOf(n, orig[nrKey!] ?? '');
     return out;
   }
@@ -232,6 +241,7 @@ class _KiBandLockState extends State<KiBandLock> {
       final k = e.key.toLowerCase();
       if (k.contains('band') || k.contains('mode')) m[e.key] = e.value;
     }
+    _fixNb(m);
     await _send(_xml(m));
     await Future<void>.delayed(const Duration(seconds: 12));
   }
