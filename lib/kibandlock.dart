@@ -7,7 +7,7 @@ const Color _kGreen = Color(0xFF39D353);
 const FlutterSecureStorage _store = FlutterSecureStorage();
 
 /// قوائم احتياطية إذا الراوتر ما أعطى قائمة نطاقاته (نفس نطاقات تطبيق 5GCtrl).
-const List<int> _kNrDefault = <int>[1, 2, 3, 5, 20, 25, 28, 40, 41, 66, 71, 77, 78, 260, 261];
+const List<int> _kNrDefault = <int>[1, 2, 3, 5, 7, 8, 20, 25, 28, 38, 40, 41, 66, 71, 77, 78, 79, 260, 261];
 const List<int> _kLteDefault = <int>[1, 2, 3, 4, 5, 7, 8, 12, 13, 14, 17, 20, 25, 26, 28, 29, 38, 39, 40, 41];
 
 Map<String, String> _kv(String x) =>
@@ -76,6 +76,7 @@ class _KiBandLockState extends State<KiBandLock> {
   Map<String, String> sig = <String, String>{};
   String? nrKey;
   bool nrOk = false;
+  bool nrForce = false;
   String listRaw = '';
   List<int> lteAll = <int>[], nrAll = <int>[];
   Set<int> lte = <int>{}, nr = <int>{};
@@ -140,6 +141,7 @@ class _KiBandLockState extends State<KiBandLock> {
 
       final key = _nrKey(n);
       final ok = key != null && RegExp(r'^[0-9a-fA-F]+$').hasMatch(n[key] ?? '');
+      final force = key == null;
       final nrFound = <int>{
         for (final m in RegExp(r'(?<![A-Za-z0-9])[Nn](\d{1,3})(?![0-9A-Za-z])').allMatches(l))
           if (int.parse(m[1]!) >= 1 && int.parse(m[1]!) <= 300) int.parse(m[1]!)
@@ -150,12 +152,13 @@ class _KiBandLockState extends State<KiBandLock> {
       orig = n;
       firstOrig ??= Map<String, String>.from(n);
       sig = s;
-      nrKey = key;
-      nrOk = ok;
+      nrKey = key ?? 'NRBand';
+      nrOk = ok || force;
+      nrForce = force;
       lteAll = lteList;
       nrAll = nrList;
       lte = _bitsOf(n['LTEBand'] ?? '0', 64).intersection(lteList.toSet());
-      nr = ok ? _bitsOf(n[key]!, 300).intersection(nrList.toSet()) : <int>{};
+      nr = force ? nrList.toSet() : (ok ? _bitsOf(n[key]!, 300).intersection(nrList.toSet()) : <int>{});
     } catch (e) {
       msg = 'ما قدرت أقرأ الراوتر: $e';
     }
@@ -163,14 +166,14 @@ class _KiBandLockState extends State<KiBandLock> {
   }
 
   /// يبني جسم الطلب: كل حقول النطاق والوضع من قراءة الراوتر، مع استبدال ماسك 4G و5G.
-  Map<String, String> _body(Set<int> l, Set<int> n) {
+  Map<String, String> _body(Set<int> l, Set<int> n, {bool withNr = true}) {
     final out = <String, String>{};
     for (final e in orig.entries) {
       final k = e.key.toLowerCase();
       if (k.contains('band') || k.contains('mode')) out[e.key] = e.value;
     }
     out['LTEBand'] = _hexOf(l, orig['LTEBand'] ?? '');
-    if (nrKey != null && nrOk) out[nrKey!] = _hexOf(n, orig[nrKey!] ?? '');
+    if (withNr && nrKey != null && nrOk) out[nrKey!] = _hexOf(n, orig[nrKey!] ?? '');
     return out;
   }
 
@@ -189,14 +192,14 @@ class _KiBandLockState extends State<KiBandLock> {
   }
 
   /// يتأكد أن الراوتر أخذ الماسك المطلوب فعلًا.
-  Future<bool> _verify(Set<int> l, Set<int> n) async {
+  Future<bool> _verify(Set<int> l, Set<int> n, {required bool nrToo}) async {
     await Future<void>.delayed(const Duration(seconds: 12));
     for (var i = 0; i < 8; i++) {
       try {
         await widget.relogin();
         final c = _kv(await widget.rd('net/net-mode'));
         final okL = _parse(c['LTEBand'] ?? '') == _mask(l);
-        final okN = !(nrKey != null && nrOk) || _parse(c[nrKey!] ?? '') == _mask(n);
+        final okN = !(nrToo && nrKey != null && nrOk) || _parse(c[nrKey!] ?? '') == _mask(n);
         return okL && okN;
       } catch (_) {
         await Future<void>.delayed(const Duration(seconds: 6));
@@ -250,13 +253,14 @@ class _KiBandLockState extends State<KiBandLock> {
       msg = 'جاري التطبيق، لا تقفل الصفحة...';
     });
     try {
-      final r = await _send(_xml(_body(lte, nr)));
+      final force = nrForce;
+      final r = await _send(_xml(_body(lte, nr, withNr: !force)));
       final e = _errCode(r);
       if (e != null) {
         _say('الراوتر رفض الطلب (كود $e). ما تغيّر شي.');
         return;
       }
-      final ok = await _verify(lte, nr);
+      final ok = await _verify(lte, nr, nrToo: !force);
       if (!ok) {
         _say('ما قدرت أتأكد أن الراوتر أخذ القفل كما هو. اضغط أيقونة التشخيص وأرسل لي النتيجة.');
         return;
@@ -267,7 +271,24 @@ class _KiBandLockState extends State<KiBandLock> {
         _say('الاتصال ما رجع خلال دقيقتين، فرجّعت الإعداد الأصلي.');
         return;
       }
-      _say('تم التطبيق وتأكدت القراءة، والراوتر متصل.');
+      var extra = '';
+      if (force) {
+        final r2 = await _send(_xml(_body(lte, nr)));
+        final e2 = _errCode(r2);
+        if (e2 != null) {
+          extra = '\nالراوتر رفض حقل 5G (كود $e2)، فتم قفل 4G فقط.';
+        } else {
+          await Future<void>.delayed(const Duration(seconds: 8));
+          final c = _kv(await widget.rd('net/net-mode'));
+          final k = _nrKey(c);
+          if (k != null && _parse(c[k] ?? '') == _mask(nr)) {
+            extra = '\nالراوتر قبل قفل 5G وأرجعه بالقراءة.';
+          } else {
+            extra = '\nالراوتر ما أعاد حقل 5G بعد الإرسال، فالأغلب تجاهله ولا يدعم قفل 5G من هذي الواجهة. تم قفل 4G فقط.';
+          }
+        }
+      }
+      _say('تم التطبيق وتأكدت القراءة، والراوتر متصل.$extra');
     } catch (e) {
       _say('تعذّر الاتصال بالراوتر: $e');
     } finally {
@@ -298,7 +319,18 @@ class _KiBandLockState extends State<KiBandLock> {
     try {
       b.writeln('## net-mode\n${cut(_hide(await widget.rd('net/net-mode')), 1500)}\n');
       b.writeln('## net-mode-list\n${cut(_hide(listRaw), 3000)}\n');
-      b.writeln('## device/signal\n${cut(_hide(await widget.rd('device/signal')), 1800)}');
+      b.writeln('## device/signal\n${cut(_hide(await widget.rd('device/signal')), 1800)}\n');
+      for (final p in const ['net/nr-band', 'net/nrband', 'net/net-nr-band', 'net/nsa-band', 'net/net-feature-switch', 'net/network']) {
+        String r;
+        try {
+          final x = await widget.rd(p);
+          final e = _errCode(x);
+          r = e != null ? 'error $e' : cut(_hide(x), 300);
+        } catch (_) {
+          r = 'خطأ اتصال';
+        }
+        b.writeln('## GET $p -> $r');
+      }
     } catch (e) {
       b.writeln('خطأ: $e');
     }
@@ -421,8 +453,13 @@ class _KiBandLockState extends State<KiBandLock> {
           _card('نطاقات 5G', [
             Text('الحقل $nrKey موجود لكن صيغته غير مفهومة: ${orig[nrKey!] ?? ''}. أرسل لي نتيجة التشخيص.')
           ])
-        else
+        else ...[
+          if (nrForce)
+            _card('تنبيه', [
+              const Text('الراوتر ما يعلن نطاقات 5G في net-mode، فالقفل هنا تجريبي: أرسل الحقل وأتأكد من القراءة. إذا تجاهله الراوتر ما يصير قفل 5G ويبقى قفل 4G.')
+            ]),
           _section('نطاقات 5G (NR)', nrAll, nr, 'N'),
+        ],
         _section('نطاقات 4G (LTE)', lteAll, lte, 'B'),
         _card('إعدادات محفوظة', [
           if (profiles.isEmpty) const Text('احفظ اختيارك باسم الشركة (STC / Zain / Mobily) وبدّل بينها بضغطة.'),
