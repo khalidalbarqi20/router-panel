@@ -65,6 +65,22 @@ class Huawei {
     _h.userAgent = 'Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36';
   }
 
+  String _rawTok = '';
+
+  Future<Resp> _chal(String t, {required String body}) async {
+    final cands = t.length > 32
+        ? <String>[t.substring(t.length - 32), t.substring(0, 32), t]
+        : <String>[t];
+    Resp? last;
+    for (final k in cands) {
+      _tok = k;
+      last = await _req('POST', '/api/user/challenge_login', body: body);
+      final e = err(last.body);
+      if (e != '125001' && e != '125002' && e != '125003') return last;
+    }
+    return last!;
+  }
+
   Future<Resp> _req(String m, String p, {String? body}) async {
     for (var i = 0;; i++) {
       try {
@@ -116,10 +132,13 @@ class Huawei {
       await _req('GET', '/');
       final tk = tag((await _req('GET', '/api/webserver/token')).body, 'token');
       b.writeln('## token طوله: ${tk.length}\n');
+      final shp = RegExp(r'^[0-9a-fA-F]+$').hasMatch(tk) ? 'hex' : 'غير hex';
+      b.writeln('## شكل التوكن: $shp، فيه # = ${tk.contains('#')}\n');
+      _rawTok = tk;
       _tok = tk.length > 32 ? tk.substring(32) : tk;
       final rnd = Random.secure();
       final cn = List.generate(64, (_) => rnd.nextInt(16).toRadixString(16)).join();
-      final c = await _req('POST', '/api/user/challenge_login',
+      final c = await _chal(_rawTok,
           body: '<?xml version="1.0" encoding="UTF-8"?><request><username>admin</username>'
               '<firstnonce>$cn</firstnonce><mode>1</mode></request>');
       b.writeln('## POST challenge_login\n${cut(c.body)}\n');
@@ -165,10 +184,11 @@ class Huawei {
     await _req('GET', '/');
     final t = tag((await _req('GET', '/api/webserver/token')).body, 'token');
     if (t.isEmpty) throw 'الراوتر لم يعطِ توكن الدخول (قد يكون فيرموير مختلف).';
+    _rawTok = t;
     _tok = t.length > 32 ? t.substring(32) : t;
     final rnd = Random.secure();
     final cn = List.generate(64, (_) => rnd.nextInt(16).toRadixString(16)).join();
-    final c = await _req('POST', '/api/user/challenge_login',
+    final c = await _chal(_rawTok,
         body: '<?xml version="1.0" encoding="UTF-8"?><request><username>admin</username>'
             '<firstnonce>$cn</firstnonce><mode>1</mode></request>');
     final e1 = err(c.body);
