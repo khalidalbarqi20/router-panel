@@ -23,8 +23,8 @@ jobs:
           flutter build windows --release
       - name: Zip
         shell: pwsh
-        run: Compress-Archive -Path app_win/build/windows/x64/runner/Release/* -DestinationPath router-panel-windows.zip
+        run: Compress-Archive -Path app_win/build/windows/x64/runner/Release/* -DestinationPath Kwifi-windows.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: router-panel-windows
-          path: router-panel-windows.zip
+          name: Kwifi-windows
+          path: Kwifi-windows.zip

@@ -19,16 +19,16 @@ Map<String, String> _kv(String x) {
 }
 
 
-/// صفحة 5G والدمج: قوائم النطاقات تتولّد من اللي يدعمه الراوتر فعليًا (من ردّه)، ولا شيء ثابت أو مخمَّن.
-class NrPage extends StatefulWidget {
+/// اختبار نطاقات 5G: يجرّب كل نطاق 5G مفعّل لحاله ويقيس إشارته ثم يرجّع إعدادك. (القفل والتعديل في صفحة النطاقات.)
+class NrTestPage extends StatefulWidget {
   final GameCtl ctl;
-  const NrPage({super.key, required this.ctl});
+  const NrTestPage({super.key, required this.ctl});
 
   @override
-  State<NrPage> createState() => _NrPageState();
+  State<NrTestPage> createState() => _NrTestState();
 }
 
-class _NrPageState extends State<NrPage> {
+class _NrTestState extends State<NrTestPage> {
   Map<String, String> nm = <String, String>{};
   Map<String, String> snap = <String, String>{};
   String rawList = '', rawNet = '', rawSig = '';
@@ -39,10 +39,8 @@ class _NrPageState extends State<NrPage> {
   bool loading = true, busy = false, cancel = false;
   String err = '';
   final List<String> log = <String>[];
-  List<Map<String, dynamic>> profiles = <Map<String, dynamic>>[];
 
   String get _okey => 'nr_orig_${widget.ctl.routerHost}';
-  String get _pkey => 'nr_profiles_${widget.ctl.routerHost}';
 
   @override
   void initState() {
@@ -103,13 +101,6 @@ class _NrPageState extends State<NrPage> {
       } catch (e) {
         dbg('nr.snap', e);
       }
-      var pl = <Map<String, dynamic>>[];
-      try {
-        final p = await _nst.read(key: _pkey);
-        if (p != null) pl = (jsonDecode(p) as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();
-      } catch (e) {
-        dbg('nr.profiles', e);
-      }
       var s = parseNrSupported(rl);
       if (s.isEmpty) s = List<int>.from(widget.ctl.nrSup);
       if (s.isEmpty && key != null) {
@@ -128,7 +119,6 @@ class _NrPageState extends State<NrPage> {
         nrKey = key;
         supNr = s;
         supLte = l;
-        profiles = pl;
         mode = n['NetworkMode'] ?? '00';
         s5
           ..clear()
@@ -173,93 +163,6 @@ class _NrPageState extends State<NrPage> {
     return '4G المساعد: ${b4.isEmpty ? '-' : 'B$b4'} · 5G: ${nb == null ? '' : 'n$nb '}RSRP ${s['nrrsrp']} · SINR ${s['nrsinr'] ?? '-'}';
   }
 
-  /// يطبّق عبر دالة الإرسال الوحيدة (setBands) وإذا الاتصال ما رجع خلال ~90 ثانية يرجّع تلقائيًا.
-  Future<bool> _doApply({String? lte, String? nr, required String md}) async {
-    final c = widget.ctl;
-    final prev = Map<String, String>.from(nm);
-    _log('يطبّق الإعداد وينتظر رجوع الاتصال (حتى 90 ثانية)...');
-    final r = await c.setBands!(lte: lte, nr: nr, mode: md);
-    if (mounted) {
-      try {
-        final n = _kv(await c.rawGet!('net/net-mode'));
-        setState(() => nm = n);
-      } catch (e) {
-        dbg('nr.verify', e);
-      }
-    }
-    if (r.ok && r.connected) {
-      _log('تم التطبيق وتأكّدت القراءة، والاتصال رجع.');
-      return true;
-    }
-    _log(r.ok
-        ? 'طُبّق الإعداد لكن الاتصال ما رجع خلال 90 ثانية. يرجّع تلقائيًا للإعداد السابق...'
-        : 'الراوتر ما طبّق الإعداد (${r.note}). يتأكد من الإعداد السابق...');
-    final k = nrKey;
-    final back = await c.setBands!(
-        lte: prev['LTEBand'], nr: k == null ? null : prev[k], mode: prev['NetworkMode'] ?? '00');
-    if (back.ok && back.connected) {
-      _log('تم الرجوع تلقائيًا للإعداد السابق والاتصال رجع.');
-    } else {
-      final o = await _nst.read(key: _okey);
-      if (o != null) {
-        final orig = Map<String, String>.from(jsonDecode(o) as Map);
-        _log('الرجوع للسابق ما نجح، يجرّب الإعداد الأصلي المحفوظ...');
-        final b2 = await c.setBands!(
-            lte: orig['LTEBand'], nr: k == null ? null : orig[k], mode: orig['NetworkMode'] ?? '00');
-        _log(b2.ok && b2.connected ? 'تم إرجاع الإعداد الأصلي.' : 'ما قدرت أرجّع الاتصال. اضغط «استعادة الأصل» أو أعد تشغيل الراوتر.');
-      } else {
-        _log('ما قدرت أرجّع الاتصال. اضغط «استعادة الأصل» أو أعد تشغيل الراوتر.');
-      }
-    }
-    await _load();
-    return false;
-  }
-
-  Future<void> _applySel() async {
-    if (busy) return;
-    if (s5.isEmpty && s4.isEmpty) {
-      setState(() => err = 'ما حدّدت أي نطاق. فعّل نطاق واحد على الأقل (5G أو 4G).');
-      return;
-    }
-    if (s5.isNotEmpty && nrKey == null) {
-      setState(() => err = 'ما لقيت حقل نطاقات 5G في رد الراوتر، فما أقدر أرسل نطاقات 5G. أرسل لي الرد الخام من الأعلى.');
-      return;
-    }
-    final t5 = (s5.toList()..sort()).map((b) => 'n$b').join(' ');
-    final t4 = (s4.toList()..sort()).map((b) => 'B$b').join(' ');
-    final warn = mode == '08'
-        ? '\n\nتحذير: وضع «5G فقط» ينقطع فيه الإنترنت لو ما لقى 5G، وشبكات NSA تحتاج نطاق 4G مساعد.'
-        : (s5.isNotEmpty && s4.isEmpty ? '\n\nتنبيه: ما اخترت نطاق 4G، وشبكات NSA تحتاج نطاق 4G مساعد.' : '');
-    if (!await _confirm('يطبّق على الراوتر:\n5G: ${s5.isEmpty ? 'بدون تغيير' : t5}\n4G: ${s4.isEmpty ? 'بدون تغيير' : t4}\nالوضع: $mode$warn\n\nينقطع الإنترنت من 20 ثانية إلى دقيقة ونص، وإذا ما رجع يرجّع الإعداد السابق تلقائيًا.')) {
-      return;
-    }
-    setState(() {
-      busy = true;
-      cancel = false;
-      err = '';
-      log.clear();
-    });
-    try {
-      final k = nrKey;
-      final ok = await _doApply(
-          lte: s4.isEmpty ? null : maskOfBands(s4),
-          nr: s5.isEmpty || k == null ? null : encodeBands(s5, nm[k] ?? ''),
-          md: mode);
-      if (ok && s5.isNotEmpty) {
-        _log('ينتظر تسجيل 5G (حتى 45 ثانية)...');
-        _log(_regText(await _waitReg(45)));
-      } else if (ok) {
-        final s = await widget.ctl.snap?.call();
-        if (s != null && mounted) _log(_regText(hasNrSignal(s) ? s : null));
-      }
-    } catch (e) {
-      dbg('nr.apply', e);
-      _log('خطأ: $e');
-    } finally {
-      if (mounted) setState(() => busy = false);
-    }
-  }
-
   Future<void> _scanSel() async {
     if (busy) return;
     final k = nrKey;
@@ -300,85 +203,6 @@ class _NrPageState extends State<NrPage> {
       await _load();
       if (mounted) setState(() => busy = false);
     }
-  }
-
-  Future<void> _restore() async {
-    if (busy) return;
-    final o = await _nst.read(key: _okey);
-    if (o == null) {
-      setState(() => err = 'ما فيه إعداد أصلي محفوظ.');
-      return;
-    }
-    final orig = Map<String, String>.from(jsonDecode(o) as Map);
-    if (!await _confirm('يرجّع الوضع ونطاقات 4G و5G للقيم اللي كانت أول ما فتحت هذي الصفحة. متأكد؟')) return;
-    setState(() {
-      busy = true;
-      err = '';
-      log.clear();
-    });
-    try {
-      final k = nrKey;
-      final r = await widget.ctl.setBands!(
-          lte: orig['LTEBand'], nr: k == null ? null : orig[k], mode: orig['NetworkMode'] ?? '00');
-      _log(r.ok && r.connected ? 'تم إرجاع الإعداد الأصلي.' : 'الراوتر ما رجّع كل القيم (${r.note}). راجع الرد الخام.');
-      await _load();
-    } catch (e) {
-      dbg('nr.restore', e);
-      _log('خطأ: $e');
-    } finally {
-      if (mounted) setState(() => busy = false);
-    }
-  }
-
-  Future<void> _saveProfiles() => _nst.write(key: _pkey, value: jsonEncode(profiles));
-
-  Future<void> _saveProfile() async {
-    if (s5.isEmpty && s4.isEmpty) {
-      setState(() => err = 'ما حدّدت أي نطاق لحفظه.');
-      return;
-    }
-    final c = TextEditingController();
-    final name = await showDialog<String>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-              title: const Text('اسم الملف (الشريحة)'),
-              content: Column(mainAxisSize: MainAxisSize.min, children: [
-                TextField(controller: c, decoration: const InputDecoration(hintText: 'مثال: STC')),
-                const SizedBox(height: 8),
-                Wrap(spacing: 6, children: [
-                  for (final n in <String>['STC', 'Zain', 'Mobily']) ActionChip(label: Text(n), onPressed: () => c.text = n),
-                ]),
-              ]),
-              actions: [
-                TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
-                FilledButton(onPressed: () => Navigator.pop(ctx, c.text.trim()), child: const Text('حفظ')),
-              ],
-            ));
-    if (name == null || name.isEmpty) return;
-    setState(() {
-      profiles.removeWhere((p) => p['n'] == name);
-      profiles.add(<String, dynamic>{'n': name, 's5': s5.toList()..sort(), 's4': s4.toList()..sort(), 'm': mode});
-    });
-    await _saveProfiles();
-  }
-
-  Future<void> _delProfile(Map<String, dynamic> p) async {
-    setState(() => profiles.remove(p));
-    await _saveProfiles();
-  }
-
-  Future<void> _applyProfile(Map<String, dynamic> p) async {
-    if (busy) return;
-    setState(() {
-      s5
-        ..clear()
-        ..addAll((p['s5'] as List).map((e) => e as int).where(supNr.contains));
-      s4
-        ..clear()
-        ..addAll((p['s4'] as List).map((e) => e as int).where(supLte.contains));
-      mode = (p['m'] as String?) ?? mode;
-    });
-    await _applySel();
   }
 
   Widget _card(String t, List<Widget> c) => Card(
@@ -428,7 +252,6 @@ class _NrPageState extends State<NrPage> {
   Widget build(BuildContext context) {
     final cur5 = nrKey == null ? <int>[] : (decodeBands(nm[nrKey!] ?? '').toList()..sort());
     final cur4 = bandsOfHex(nm['LTEBand'] ?? '').where(supLte.contains).toList()..sort();
-    final modes = widget.ctl.modes.isEmpty ? <String>['00', '03', '08'] : widget.ctl.modes;
     const names = <String, String>{'00': 'تلقائي (4G+5G)', '03': '4G فقط', '08': '5G فقط', '01': '2G فقط', '02': '3G فقط'};
     final tail = kErrLog.length > 25 ? kErrLog.sublist(kErrLog.length - 25) : kErrLog;
     final raw = StringBuffer()
@@ -445,7 +268,7 @@ class _NrPageState extends State<NrPage> {
     final rawText = raw.toString();
 
     return Scaffold(
-      appBar: AppBar(title: const Text('5G والدمج')),
+      appBar: AppBar(title: const Text('اختبار نطاقات 5G')),
       body: loading
           ? const Center(child: CircularProgressIndicator())
           : ListView(padding: const EdgeInsets.all(12), children: [
@@ -486,12 +309,11 @@ class _NrPageState extends State<NrPage> {
                     : '5G: ${cur5.isEmpty ? '-' : cur5.map((b) => 'n$b').join(' ')}'),
                 Text(_regText(hasNrSignal(snap) ? snap : null), style: TextStyle(color: hasNrSignal(snap) ? _nrGreen : Colors.white70)),
               ]),
-              if (mode == '08')
-                _card('تحذير', [
-                  const Text(
-                      'وضع «5G فقط» (08): شبكات NSA تحتاج نطاق 4G مساعد، فلو ما لقى 5G ينقطع الإنترنت. الأفضل تثبّت نطاق 5G مع نطاق 4G المناسب له بالوضع التلقائي.',
-                      style: TextStyle(color: Colors.orangeAccent, fontSize: 13)),
-                ]),
+              _card('كيف يشتغل الاختبار', [
+                const Text(
+                    'فعّل نطاقات 5G اللي تبي تختبرها (ونطاقات 4G المساعدة)، ثم اضغط «اختبار». كل نطاق يُجرَّب لحاله ويُقاس، وبعدها يرجع إعدادك السابق تلقائيًا. القفل والتعديل الدائم من صفحة «النطاقات».',
+                    style: TextStyle(color: Colors.white54, fontSize: 13)),
+              ]),
               _card('5G Bands', [
                 if (supNr.isEmpty)
                   const Text('ما قدرت أستخرج نطاقات 5G من رد الراوتر. أرسل لي الرد الخام من الأعلى.',
@@ -505,40 +327,18 @@ class _NrPageState extends State<NrPage> {
                 if (supLte.isEmpty)
                   const Text('ما قدرت أستخرج نطاقات 4G من رد الراوتر.', style: TextStyle(color: Colors.orangeAccent, fontSize: 13))
                 else ...[
-                  const Text('اختر نطاقات 4G للدمج مع 5G (NSA يحتاج نطاق 4G مساعد). لو ما فعّلت شيء ما أغيّر نطاقات 4G.',
+                  const Text('اختر نطاقات 4G المساعدة أثناء الاختبار (NSA يحتاج نطاق 4G مساعد). لو ما فعّلت شيء أستخدم نطاقات 4G الحالية.',
                       style: TextStyle(color: Colors.white54, fontSize: 13)),
                   _switches(supLte, s4, 'B'),
                   _quick(s4, supLte),
                 ],
               ]),
-              _card('الوضع', [
-                Wrap(spacing: 6, children: [
-                  for (final m in modes)
-                    ChoiceChip(
-                      label: Text(names[m] ?? 'وضع $m'),
-                      selected: mode == m,
-                      onSelected: busy ? null : (_) => setState(() => mode = m),
-                    ),
-                ]),
-              ]),
               if (err.isNotEmpty)
                 Padding(padding: const EdgeInsets.symmetric(vertical: 6), child: Text(err, style: const TextStyle(color: Colors.redAccent))),
-              FilledButton.icon(
-                onPressed: busy ? null : _applySel,
-                icon: const Icon(Icons.check),
-                label: Text('تطبيق (5G ${s5.length} · 4G ${s4.length})'),
-              ),
-              const SizedBox(height: 8),
               FilledButton.tonalIcon(
                 onPressed: busy || s5.isEmpty ? null : _scanSel,
                 icon: const Icon(Icons.fact_check),
                 label: Text('اختبر كل نطاق 5G مفعّل لحاله (${s5.length})'),
-              ),
-              const SizedBox(height: 8),
-              OutlinedButton.icon(
-                onPressed: busy ? null : _restore,
-                icon: const Icon(Icons.restore),
-                label: const Text('استعادة الأصل'),
               ),
               if (busy)
                 Padding(
@@ -548,21 +348,6 @@ class _NrPageState extends State<NrPage> {
                     TextButton(onPressed: () => setState(() => cancel = true), child: const Text('إيقاف')),
                   ]),
                 ),
-              _card('ملفات جاهزة (لكل شريحة)', [
-                const Text('احفظ التفعيل الحالي باسم (STC / Zain / Mobily) وبدّل بينها بضغطة.',
-                    style: TextStyle(color: Colors.white54, fontSize: 13)),
-                if (profiles.isNotEmpty)
-                  Wrap(spacing: 6, children: [
-                    for (final p in profiles)
-                      InputChip(
-                        label: Text('${p['n']}'),
-                        onPressed: busy ? null : () => _applyProfile(p),
-                        onDeleted: busy ? null : () => _delProfile(p),
-                      ),
-                  ]),
-                TextButton.icon(
-                    onPressed: busy ? null : _saveProfile, icon: const Icon(Icons.save), label: const Text('حفظ الحالي كملف')),
-              ]),
               if (log.isNotEmpty) _card('السجل', [for (final l in log) Text(l)]),
               const SizedBox(height: 20),
             ]),

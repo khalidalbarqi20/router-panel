@@ -1,5 +1,5 @@
 name: router_panel
-description: لوحة تحكم راوتر Huawei
+description: Kwifi - لوحة تحكم راوتر Huawei
 publish_to: none
 version: 0.1.0+1
 environment:

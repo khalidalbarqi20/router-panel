@@ -3,19 +3,19 @@ import 'probe.dart';
 
 const Color _kg = Color(0xFF39D353);
 
-/// شعار KiFi: مستطيل أخضر مستدير بداخله الاسم.
+/// شعار Kwifi: مستطيل أخضر مستدير بداخله الاسم.
 class KifiBadge extends StatelessWidget {
   final double size;
   const KifiBadge({super.key, this.size = 32});
 
   @override
   Widget build(BuildContext context) => Container(
-        width: size * 1.6,
+        width: size * 2.1,
         height: size,
         alignment: Alignment.center,
         decoration: BoxDecoration(color: _kg, borderRadius: BorderRadius.circular(size * 0.28)),
-        child: Text('KiFi',
-            style: TextStyle(color: Colors.black, fontWeight: FontWeight.w900, fontSize: size * 0.5, letterSpacing: 0.4)),
+        child: Text('Kwifi',
+            style: TextStyle(color: Colors.black, fontWeight: FontWeight.w900, fontSize: size * 0.48, letterSpacing: 0.2)),
       );
 }
 

@@ -19,9 +19,37 @@ String? _errCode(String x) {
   return RegExp(r'<code>([^<]*)</code>').firstMatch(x)?[1] ?? '?';
 }
 
+/// معنى أكواد أخطاء الراوتر الشائعة (هواوي).
+String _errText(String c) {
+  switch (c) {
+    case '100001':
+      return 'خطأ غير محدد في الراوتر';
+    case '100002':
+      return 'هذا الأمر غير مدعوم في فيرموير الراوتر';
+    case '100003':
+      return 'ما عندك صلاحية (انتهت جلسة الدخول، ادخل من جديد)';
+    case '100004':
+      return 'الراوتر مشغول، أعد المحاولة بعد شوي';
+    case '100006':
+      return 'الراوتر رفض القيم أو الصيغة المرسلة';
+    case '125001':
+    case '125002':
+    case '125003':
+      return 'انتهت جلسة الدخول أو التوكن، أعد الدخول';
+    default:
+      return 'رفض الراوتر الطلب';
+  }
+}
+
 String _hide(String x) => x.replaceAllMapped(
     RegExp(r'<(\w*(?:imei|imsi|serial|mac|iccid|msisdn|phone|number|ssid)\w*)>[^<]+</', caseSensitive: false),
     (m) => '<${m[1]}>***</');
+
+double? _n(String? s) {
+  if (s == null) return null;
+  final m = RegExp(r'-?\d+(\.\d+)?').firstMatch(s);
+  return m == null ? null : double.tryParse(m[0]!);
+}
 
 BigInt _parse(String h) => BigInt.tryParse(h.trim(), radix: 16) ?? BigInt.zero;
 
@@ -63,7 +91,20 @@ class KiBandLock extends StatefulWidget {
   final Future<String> Function(String) rd;
   final Future<String> Function(String, String) wr;
   final Future<void> Function() relogin;
-  const KiBandLock({super.key, required this.rd, required this.wr, required this.relogin});
+  /// عنوان الراوتر (لاستيراد ملفات الشرائح القديمة من صفحة 5G السابقة).
+  final String routerHost;
+  /// يرجّع الإعداد الأول المحفوظ لهذا الراوتر (يوفّرها التطبيق الرئيسي).
+  final Future<(bool, String)> Function()? restoreOriginal;
+  final String originalText;
+  const KiBandLock({
+    super.key,
+    required this.rd,
+    required this.wr,
+    required this.relogin,
+    this.routerHost = '',
+    this.restoreOriginal,
+    this.originalText = '',
+  });
 
   @override
   State<KiBandLock> createState() => _KiBandLockState();
@@ -84,6 +125,7 @@ class _KiBandLockState extends State<KiBandLock> {
   List<int> lteAll = <int>[], nrAll = <int>[];
   Set<int> lte = <int>{}, nr = <int>{};
   Map<String, Map<String, List<int>>> profiles = <String, Map<String, List<int>>>{};
+  final Map<String, String> profMode = <String, String>{};
 
   @override
   void initState() {
@@ -109,21 +151,84 @@ class _KiBandLockState extends State<KiBandLock> {
               ])) ??
       false;
 
+  /// رسالة تنبيه بنتيجة العملية: kind 0 = تم، 1 = تم جزئيًا/تنبيه، 2 = ما تم.
+  Future<void> _alert(int kind, String title, List<String> lines) async {
+    if (mounted) setState(() => msg = '$title\n${lines.join('\n')}');
+    if (!mounted) return;
+    final color = kind == 0 ? _kGreen : (kind == 1 ? Colors.orangeAccent : Colors.redAccent);
+    final icon = kind == 0 ? Icons.check_circle : (kind == 1 ? Icons.warning_amber_rounded : Icons.cancel);
+    await showDialog<void>(
+        context: context,
+        builder: (d) => AlertDialog(
+              title: Row(children: [
+                Icon(icon, color: color, size: 30),
+                const SizedBox(width: 8),
+                Expanded(child: Text(title, style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 18))),
+              ]),
+              content: SizedBox(
+                  width: double.maxFinite,
+                  child: SingleChildScrollView(
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    for (final l in lines) Padding(padding: const EdgeInsets.only(bottom: 6), child: Text(l)),
+                  ]))),
+              actions: [TextButton(onPressed: () => Navigator.pop(d), child: const Text('حسنًا'))],
+            ));
+  }
+
   Future<void> _loadProfiles() async {
     try {
       final raw = await _store.read(key: 'band_profiles');
-      if (raw == null) return;
-      final j = jsonDecode(raw) as Map<String, dynamic>;
-      final out = <String, Map<String, List<int>>>{};
-      for (final e in j.entries) {
-        final v = e.value as Map<String, dynamic>;
-        out[e.key] = <String, List<int>>{
-          'lte': <int>[for (final x in (v['lte'] as List)) x as int],
-          'nr': <int>[for (final x in (v['nr'] as List)) x as int],
-        };
+      if (raw != null) {
+        final j = jsonDecode(raw) as Map<String, dynamic>;
+        final out = <String, Map<String, List<int>>>{};
+        for (final e in j.entries) {
+          final v = e.value as Map<String, dynamic>;
+          out[e.key] = <String, List<int>>{
+            'lte': <int>[for (final x in (v['lte'] as List)) x as int],
+            'nr': <int>[for (final x in (v['nr'] as List)) x as int],
+          };
+          final m = v['m'];
+          if (m is String && m.isNotEmpty) profMode[e.key] = m;
+        }
+        profiles = out;
       }
-      profiles = out;
     } catch (_) {}
+    await _importOldProfiles();
+  }
+
+  /// ملفات الشرائح (STC / Zain ...) اللي كانت محفوظة في صفحة 5G القديمة تنضم هنا مرة وحدة.
+  Future<void> _importOldProfiles() async {
+    if (widget.routerHost.isEmpty) return;
+    final key = 'nr_profiles_${widget.routerHost}';
+    try {
+      final raw = await _store.read(key: key);
+      if (raw == null) return;
+      for (final e in (jsonDecode(raw) as List)) {
+        final p = Map<String, dynamic>.from(e as Map);
+        final n = '${p['n'] ?? ''}';
+        if (n.isEmpty || profiles.containsKey(n)) continue;
+        profiles[n] = <String, List<int>>{
+          'lte': <int>[for (final x in ((p['s4'] as List?) ?? <dynamic>[])) x as int],
+          'nr': <int>[for (final x in ((p['s5'] as List?) ?? <dynamic>[])) x as int],
+        };
+        final m = p['m'];
+        if (m is String && m.isNotEmpty) profMode[n] = m;
+      }
+      await _writeProfiles();
+      await _store.delete(key: key);
+    } catch (_) {}
+  }
+
+  Future<void> _writeProfiles() async {
+    final out = <String, dynamic>{
+      for (final e in profiles.entries)
+        e.key: <String, dynamic>{
+          'lte': e.value['lte'] ?? <int>[],
+          'nr': e.value['nr'] ?? <int>[],
+          if (profMode[e.key] != null) 'm': profMode[e.key],
+        },
+    };
+    await _store.write(key: 'band_profiles', value: jsonEncode(out));
   }
 
   Future<void> _load() async {
@@ -294,64 +399,146 @@ class _KiBandLockState extends State<KiBandLock> {
     await Future<void>.delayed(const Duration(seconds: 12));
   }
 
+  /// بعد تطبيق نطاقات 5G: ينتظر تسجيل الراوتر على 5G (حتى 45 ثانية) ويرجّع وصف الحالة.
+  Future<(bool, String)> _waitFive() async {
+    final end = DateTime.now().add(const Duration(seconds: 45));
+    Map<String, String> last = <String, String>{};
+    while (DateTime.now().isBefore(end)) {
+      try {
+        last = _kv(await widget.rd('device/signal'));
+        if (_n(last['nrrsrp']) != null) {
+          final nb = RegExp(r'\d+').firstMatch(last['nrband'] ?? '')?[0];
+          return (
+            true,
+            'سجّل على 5G${nb == null ? '' : ' (n$nb)'} · RSRP ${last['nrrsrp']} · SINR ${last['nrsinr'] ?? '-'}'
+          );
+        }
+      } catch (_) {
+        try {
+          await widget.relogin();
+        } catch (_) {}
+      }
+      await Future<void>.delayed(const Duration(seconds: 3));
+    }
+    return (false, '');
+  }
+
   Future<void> _apply() async {
     if (lte.isEmpty) {
-      _say('اختر نطاق 4G واحد على الأقل.');
+      await _alert(2, 'ما تم التطبيق', <String>['اختر نطاق 4G واحد على الأقل.']);
       return;
     }
     if (nrKey != null && nrOk && nr.isEmpty) {
-      _say('اختر نطاق 5G واحد على الأقل. (لإيقاف 5G استخدم وضع 4G فقط من صفحة MODES.)');
+      await _alert(2, 'ما تم التطبيق', <String>[
+        'اختر نطاق 5G واحد على الأقل.',
+        'لإيقاف 5G اختر وضع «4G فقط» من هذي الصفحة.'
+      ]);
       return;
     }
+    final risky = !<String>['00', '03'].contains(mode);
     final go = await _ask(
-        'سيُطبَّق القفل وقد ينقطع الإنترنت قرابة دقيقة. إذا ما رجع الاتصال خلال دقيقتين يرجع الإعداد الأصلي تلقائيًا. متأكد؟');
+        'سيُطبَّق القفل وقد ينقطع الإنترنت قرابة دقيقة. إذا ما رجع الاتصال خلال دقيقتين يرجع الإعداد الأصلي تلقائيًا.'
+        '${risky ? '\n\nتحذير: وضع «${_modeName[mode] ?? mode}» قد يقطع الإنترنت إذا لم تتوفر الشبكة.' : ''}'
+        '\n\nمتأكد؟');
     if (!go) return;
     setState(() {
       busy = true;
       msg = 'جاري التطبيق، لا تقفل الصفحة...';
     });
+    var kind = 0;
+    var title = 'تم التطبيق';
+    final lines = <String>[];
     try {
       final force = nrForce;
+      final want5 = nrKey != null && nr.isNotEmpty && (nrOk || force);
       final r = await _sendAny(_variants(orig, _over(lte, nr, withNr: !force)));
       final e = _errCode(r);
       if (e != null) {
-        _say('الراوتر رفض الطلب (كود $e). ما تغيّر شي.');
-        return;
-      }
-      final ok = await _verify(lte, nr, nrToo: !force);
-      if (!ok) {
-        _say('ما قدرت أتأكد أن الراوتر أخذ القفل كما هو. اضغط أيقونة التشخيص وأرسل لي النتيجة.');
-        return;
-      }
-      final up = await _connected(120);
-      if (!up) {
-        await _restore();
-        _say('الاتصال ما رجع خلال دقيقتين، فرجّعت الإعداد الأصلي.');
-        return;
-      }
-      var extra = '';
-      if (force) {
-        final r2 = await _sendAny(_variants(orig, _over(lte, nr)));
-        final e2 = _errCode(r2);
-        if (e2 != null) {
-          extra = '\nالراوتر رفض حقل 5G (كود $e2)، فتم قفل 4G فقط.';
+        kind = 2;
+        title = 'ما تم التطبيق';
+        lines
+          ..add('الراوتر رفض الطلب (كود $e): ${_errText(e)}.')
+          ..add('ما تغيّر شي في إعدادات الراوتر.');
+      } else {
+        final ok = await _verify(lte, nr, nrToo: !force);
+        if (!ok) {
+          kind = 2;
+          title = 'ما تأكدت من التطبيق';
+          lines
+            ..add('الراوتر استلم الطلب لكن القيمة اللي قرأتها منه بعدها تختلف عن المطلوبة.')
+            ..add('السبب المحتمل: الراوتر تجاهل نطاقات 5G أو بعض النطاقات غير مدعومة فيه.')
+            ..add('اضغط أيقونة التشخيص (الحشرة) في الأعلى وأرسل لي النتيجة.');
         } else {
-          await Future<void>.delayed(const Duration(seconds: 8));
-          final c = _kv(await widget.rd('net/net-mode'));
-          final k = _nrKey(c);
-          if (k != null && _parse(c[k] ?? '') == _mask(nr)) {
-            extra = '\nالراوتر قبل قفل 5G وأرجعه بالقراءة.';
+          final up = await _connected(120);
+          if (!up) {
+            await _restore();
+            kind = 2;
+            title = 'ما رجع الاتصال، رجّعت الإعداد الأصلي';
+            lines
+              ..add('الراوتر طبّق القفل لكن الاتصال ما رجع خلال دقيقتين.')
+              ..add('السبب المحتمل: ما فيه تغطية على النطاقات المحددة في موقعك، أو أن وضع «5G فقط» ما لقى 5G.')
+              ..add('رجّعت الإعداد الأصلي تلقائيًا.');
           } else {
-            extra = '\nالراوتر ما أعاد حقل 5G بعد الإرسال، فالأغلب تجاهله ولا يدعم قفل 5G من هذي الواجهة. تم قفل 4G فقط.';
+            lines.add('الراوتر أخذ الإعداد وتأكدت منه بالقراءة، والاتصال شغّال (شكل الطلب ${_vOk + 1}).');
+            var five5 = true;
+            if (force && nr.isNotEmpty) {
+              final r2 = await _sendAny(_variants(orig, _over(lte, nr)));
+              final e2 = _errCode(r2);
+              if (e2 != null) {
+                five5 = false;
+                lines.add('نطاقات 5G: الراوتر رفض حقل 5G (كود $e2): ${_errText(e2)}. تم قفل 4G فقط.');
+              } else {
+                await Future<void>.delayed(const Duration(seconds: 8));
+                final c = _kv(await widget.rd('net/net-mode'));
+                final k = _nrKey(c);
+                if (k != null && _parse(c[k] ?? '') == _mask(nr)) {
+                  lines.add('نطاقات 5G: الراوتر قبل القفل وأرجعه بالقراءة.');
+                } else {
+                  five5 = false;
+                  lines.add('نطاقات 5G: الراوتر ما أعاد حقل 5G بعد الإرسال، فالأغلب تجاهله ولا يدعم قفل 5G من هذي الواجهة. تم قفل 4G فقط.');
+                }
+              }
+            }
+            if (want5 && five5) {
+              if (mode == '03') {
+                five5 = false;
+                lines
+                  ..add('نطاقات 5G انحفظت، لكن الوضع «4G فقط» فما راح يشتغل 5G.')
+                  ..add('غيّر الوضع إلى «تلقائي (4G+5G)» أو «5G فقط» وطبّق من جديد.');
+              } else {
+                _say('ينتظر تسجيل الراوتر على 5G (حتى 45 ثانية)...');
+                final fr = await _waitFive();
+                if (fr.$1) {
+                  lines.add('نطاقات 5G: ${fr.$2}');
+                } else {
+                  five5 = false;
+                  lines
+                    ..add('نطاقات 5G: انحفظت في الراوتر لكنه ما سجّل على 5G خلال 45 ثانية.')
+                    ..add('الأسباب المحتملة:')
+                    ..add('• ما فيه تغطية 5G على النطاقات المختارة في موقعك.')
+                    ..add('• شبكة 5G من نوع NSA تحتاج نطاق 4G مساعد مفعّل مع نطاق 5G.')
+                    ..add('• إشارة 5G ضعيفة جدًا أو الشريحة/الباقة ما تدعم 5G.')
+                    ..add('انتظر دقيقة وافحص من صفحة «الفحص»، أو جرّب نطاقات 5G ثانية.');
+                }
+              }
+            }
+            if (want5 && !five5) {
+              kind = 1;
+              title = 'تم تطبيق 4G، لكن 5G ما اشتغل';
+            } else if (want5) {
+              title = 'تم تطبيق 4G و 5G';
+            }
           }
         }
       }
-      _say('تم التطبيق وتأكدت القراءة، والراوتر متصل. (شكل الطلب ${_vOk + 1})$extra');
     } catch (e) {
-      _say('تعذّر الاتصال بالراوتر: $e');
+      kind = 2;
+      title = 'تعذّر الاتصال بالراوتر';
+      lines.add('$e');
     } finally {
       await _load();
     }
+    await _alert(kind, title, lines);
   }
 
   Future<void> _restoreTap() async {
@@ -369,6 +556,27 @@ class _KiBandLockState extends State<KiBandLock> {
     } finally {
       await _load();
     }
+  }
+
+  Future<void> _restoreFirst() async {
+    final f = widget.restoreOriginal;
+    if (f == null) return;
+    if (!await _ask('الرجوع للإعداد الأول المحفوظ لهذا الراوتر؟\n${widget.originalText}')) return;
+    setState(() {
+      busy = true;
+      msg = 'جاري الرجوع للإعداد الأول...';
+    });
+    var ok = false;
+    var text = '';
+    try {
+      final r = await f();
+      ok = r.$1;
+      text = r.$2;
+    } catch (e) {
+      text = 'تعذّر الرجوع: $e';
+    }
+    await _load();
+    await _alert(ok ? 0 : 2, ok ? 'تم الرجوع للإعداد الأول' : 'ما تم الرجوع', <String>[text]);
   }
 
   Future<void> _diag() async {
@@ -429,16 +637,18 @@ class _KiBandLockState extends State<KiBandLock> {
     final l = lte.toList()..sort();
     final n = nr.toList()..sort();
     profiles[name] = <String, List<int>>{'lte': l, 'nr': n};
+    profMode[name] = mode;
     try {
-      await _store.write(key: 'band_profiles', value: jsonEncode(profiles));
+      await _writeProfiles();
     } catch (_) {}
     if (mounted) setState(() {});
   }
 
   Future<void> _delProfile(String name) async {
     profiles.remove(name);
+    profMode.remove(name);
     try {
-      await _store.write(key: 'band_profiles', value: jsonEncode(profiles));
+      await _writeProfiles();
     } catch (_) {}
     if (mounted) setState(() {});
   }
@@ -498,7 +708,7 @@ class _KiBandLockState extends State<KiBandLock> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('الراوتر والنطاقات'), actions: [
+      appBar: AppBar(title: const Text('النطاقات (تعديل وقفل)'), actions: [
         IconButton(onPressed: busy ? null : _load, icon: const Icon(Icons.refresh), tooltip: 'تحديث'),
         IconButton(onPressed: busy ? null : _diag, icon: const Icon(Icons.bug_report), tooltip: 'تشخيص'),
       ]),
@@ -544,6 +754,8 @@ class _KiBandLockState extends State<KiBandLock> {
                     : () => setState(() {
                           lte = (e.value['lte'] ?? <int>[]).toSet().intersection(lteAll.toSet());
                           nr = (e.value['nr'] ?? <int>[]).toSet().intersection(nrAll.toSet());
+                          final pm = profMode[e.key];
+                          if (pm != null && modes.contains(pm)) mode = pm;
                         }),
                 onDeleted: () => _delProfile(e.key),
               ),
@@ -558,6 +770,17 @@ class _KiBandLockState extends State<KiBandLock> {
             onPressed: (busy || firstOrig == null) ? null : _restoreTap,
             icon: const Icon(Icons.undo),
             label: const Text('استعادة الإعداد الأصلي')),
+        if (widget.restoreOriginal != null) ...[
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+              onPressed: busy ? null : _restoreFirst,
+              icon: const Icon(Icons.settings_backup_restore),
+              label: const Text('رجوع للإعداد الأول (المحفوظ للراوتر)')),
+          if (widget.originalText.isNotEmpty)
+            Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text('المحفوظ: ${widget.originalText}', style: const TextStyle(fontSize: 11, color: Colors.white54))),
+        ],
         if (msg.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 12), child: SelectableText(msg)),
       ]),
     );

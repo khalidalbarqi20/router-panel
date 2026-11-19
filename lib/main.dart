@@ -1,7 +1,6 @@
 import 'bands.dart';
 import 'dart:async';
 import 'kibandlock.dart';
-import 'kisignals.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -12,7 +11,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'game.dart';
-import 'modes.dart';
+import 'scanhub.dart';
+import 'wifiedit.dart';
 import 'brand.dart';
 import 'netinfo.dart';
 import 'netquality.dart';
@@ -330,7 +330,7 @@ class App extends StatelessWidget {
   const App({super.key});
   @override
   Widget build(BuildContext c) => MaterialApp(
-        title: 'لوحة الراوتر',
+        title: 'Kwifi',
         debugShowCheckedModeBanner: false,
         theme: ThemeData(
             brightness: Brightness.dark,
@@ -360,7 +360,6 @@ class _H extends State<Home> {
   Map<String, String>? orig;
   List<String> modes = [];
   List<int> sup = [];
-  Set<int> sel = {};
   List<double> hR = [], hS = [];
   String nb = '3fffffff', msg = '', report = '', isp = '', model = 'ROUTER';
   String? nrKey;
@@ -482,7 +481,6 @@ class _H extends State<Home> {
       if (q != null) hS.add(q);
       if (hR.length > 600) hR.removeAt(0);
       if (hS.length > 600) hS.removeAt(0);
-      if (sync || sel.isEmpty) sel = bandsOf(nm['LTEBand'] ?? '0').toSet();
     });
   }
 
@@ -668,7 +666,6 @@ class _H extends State<Home> {
       tr = {};
       hR = [];
       hS = [];
-      sel = {};
       modes = [];
       sup = [];
       ant = '';
@@ -724,16 +721,15 @@ class _H extends State<Home> {
     if (mounted) setState(() {});
   }
 
-  Future<void> change(String mask, String mode) => run(() async {
-        final r = await setBands(lte: mask, mode: mode);
-        msg = r.ok
-            ? 'تم التطبيق وتأكّدت القراءة.${r.connected ? '' : ' (الاتصال ما رجع بعد، انتظر شوي)'}'
-            : 'الراوتر لم يطبّق التغيير (${r.note.isEmpty ? 'بدون رد' : r.note}).';
-      });
-
-  Future<void> pickMode(String m) async {
-    if (!['00', '03'].contains(m) && !await confirm('هذا الوضع قد يقطع الإنترنت إذا لم تتوفر الشبكة. متأكد؟')) return;
-    await change(norm(nm['LTEBand'] ?? ''), m);
+  /// يرجّع الإعداد الأول المحفوظ لهذا الراوتر (الوضع ونطاقات 4G)، تستخدمه صفحة النطاقات.
+  Future<(bool, String)> restoreOriginalFirst() async {
+    final o = orig;
+    if (o == null || hw == null) return (false, 'ما فيه إعداد أصلي محفوظ.');
+    final r = await setBands(lte: norm(o['LTEBand'] ?? ''), mode: o['NetworkMode'] ?? '00');
+    if (r.ok) {
+      return (true, 'تم الرجوع للإعداد الأول وتأكّدت القراءة.${r.connected ? '' : ' (الاتصال ما رجع بعد، انتظر شوي)'}');
+    }
+    return (false, 'الراوتر لم يطبّق الرجوع (${r.note.isEmpty ? 'بدون رد' : r.note}).');
   }
 
   Future<void> reconnect() async {
@@ -1000,52 +996,74 @@ class _H extends State<Home> {
         scanList: (<int>{...sup, ...kSaudiBands}.toList()..sort()),
       );
 
-  Future<void> openKiSignals() async {
-    if (busy || hw == null) return;
-    setState(() => busy = true);
-    try {
-      await Navigator.of(context).push(MaterialPageRoute<void>(
-          builder: (c) => KiSignals(
-              rd: (p) => hw!.get(p),
-              wr: (p, x) => hw!.post(p, x),
-              relogin: () => hw!.login(_pw!))));
-    } finally {
-      if (mounted) setState(() => busy = false);
-    }
-    try {
-      await refresh(sync: true);
-    } catch (_) {}
-  }
-
   Future<void> openKiBands() async {
     if (busy || hw == null) return;
     setState(() => busy = true);
+    final o = orig;
+    final ot = o == null
+        ? ''
+        : 'الوضع ${ML[o['NetworkMode']] ?? o['NetworkMode'] ?? '-'} والنطاقات ${bandsOf(o['LTEBand'] ?? '').map((b) => 'B$b').join(' ')}';
     try {
       await Navigator.of(context).push(MaterialPageRoute<void>(
           builder: (c) => KiBandLock(
               rd: (p) => hw!.get(p),
               wr: (p, x) => hw!.post(p, x),
+              relogin: () => hw!.login(_pw!),
+              routerHost: hw!.host,
+              restoreOriginal: restoreOriginalFirst,
+              originalText: ot)));
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+    try {
+      await refresh();
+    } catch (e) {
+      dbg('main.openKiBands', e);
+    }
+  }
+
+  Future<void> openScan() async {
+    if (busy || hw == null) return;
+    setState(() => busy = true);
+    try {
+      await Navigator.of(context).push(MaterialPageRoute<void>(
+          builder: (c) => ScanHub(
+              ctl: gameCtl(),
+              rd: (p) => hw!.get(p),
+              wr: (p, x) => hw!.post(p, x),
               relogin: () => hw!.login(_pw!))));
     } finally {
       if (mounted) setState(() => busy = false);
     }
     try {
-      await refresh(sync: true);
-    } catch (_) {}
+      await refresh();
+    } catch (e) {
+      dbg('main.openScan', e);
+    }
   }
 
-  Future<void> openGame() async {
+  Future<void> openWifi() async {
     if (busy || hw == null) return;
     setState(() => busy = true);
     try {
-      await Navigator.of(context).push(MaterialPageRoute<void>(builder: (c) => ModesHub(ctl: gameCtl())));
+      await Navigator.of(context).push(MaterialPageRoute<void>(
+          builder: (c) => WifiEditPage(
+              rd: (p) => hw!.get(p),
+              wr: (p, x) => hw!.post(p, x),
+              relogin: () => hw!.login(_pw!))));
     } finally {
       if (mounted) setState(() => busy = false);
     }
+    // تغيير الواي فاي قد يقطع الجلسة، فنتأكد أننا ما زلنا ندخل الراوتر.
     try {
-      await refresh(sync: true);
+      await refresh();
     } catch (e) {
-      dbg('main.dart:967', e);
+      dbg('main.openWifi', e);
+      try {
+        await hw!.login(_pw!);
+      } catch (e2) {
+        dbg('main.openWifi.relogin', e2);
+      }
     }
   }
 
@@ -1124,23 +1142,17 @@ class _H extends State<Home> {
           ])));
 
   List<Widget> routerTab() => [
-        card('قفل النطاقات', [
-          FilledButton.icon(
-              onPressed: busy ? null : openKiBands,
-              icon: const Icon(Icons.lock),
-              label: const Text('قفل نطاقات 5G و 4G')),
-          const SizedBox(height: 6),
-          OutlinedButton.icon(
-              onPressed: busy ? null : openKiSignals,
-              icon: const Icon(Icons.compare_arrows),
-              label: const Text('إشارات الترددات')),
-        ]),
         card('الراوتر', [
           FilledButton.icon(
               style: FilledButton.styleFrom(backgroundColor: Colors.redAccent, foregroundColor: Colors.white),
               onPressed: busy ? null : rebootRouter,
               icon: const Icon(Icons.restart_alt),
               label: const Text('إعادة تشغيل الراوتر')),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+              onPressed: busy ? null : reconnect,
+              icon: const Icon(Icons.refresh),
+              label: const Text('إعادة اتصال الشبكة')),
           const SizedBox(height: 8),
           OutlinedButton.icon(
               onPressed: () => openRouterPage(),
@@ -1168,42 +1180,6 @@ class _H extends State<Home> {
                     onSelected: busy ? null : (_) => setAntenna(e.key))
             ]),
           ]),
-        card('الوضع الحالي', [Text(ML[nm['NetworkMode']] ?? nm['NetworkMode'] ?? '-')]),
-        if (modes.isNotEmpty)
-          card('وضع الشبكة', [
-            Wrap(spacing: 8, children: [
-              for (final m in modes)
-                ChoiceChip(label: Text(ML[m] ?? 'وضع $m'), selected: nm['NetworkMode'] == m,
-                    onSelected: busy ? null : (_) => pickMode(m))
-            ])
-          ]),
-        if (sup.isNotEmpty)
-          card('نطاقات 4G', [
-            Wrap(spacing: 8, children: [
-              for (final b in sup)
-                FilterChip(label: Text('B$b'), selected: sel.contains(b),
-                    onSelected: busy ? null : (v) => setState(() => v ? sel.add(b) : sel.remove(b)))
-            ]),
-            const SizedBox(height: 8),
-            Wrap(spacing: 8, children: [
-              FilledButton(
-                  onPressed: busy || sel.isEmpty ? null : () => change(maskOf(sel), nm['NetworkMode'] ?? '00'),
-                  child: const Text('تطبيق النطاقات')),
-              OutlinedButton(onPressed: busy ? null : () => setState(() => sel = sup.toSet()), child: const Text('كل المدعومة')),
-            ]),
-          ]),
-        card('الرجوع', [
-          OutlinedButton(
-              onPressed: busy || orig == null
-                  ? null
-                  : () async {
-                      if (await confirm('الرجوع للإعداد الأول (${ML[orig!['NetworkMode']] ?? orig!['NetworkMode']})؟')) {
-                        await change(norm(orig!['LTEBand'] ?? ''), orig!['NetworkMode'] ?? '00');
-                      }
-                    },
-              child: const Text('رجوع للإعداد الأول')),
-          Text('المحفوظ: الوضع ${orig?['NetworkMode']} والنطاقات ${orig?['LTEBand']}'),
-        ]),
         card('تقرير الجهاز', [
           Wrap(spacing: 8, children: [
             OutlinedButton(onPressed: busy ? null : doReport, child: const Text('اقرأ الجهاز')),
@@ -1216,6 +1192,51 @@ class _H extends State<Home> {
         ]),
       ];
 
+  /// كل الترددات المحددة (المقفولة) الآن للـ 4G و 5G، والمتصل منها فعليًا يظهر أخضر.
+  Widget bandsCard() {
+    final k = nrKey;
+    var l4 = bandsOf(nm['LTEBand'] ?? '0');
+    if (sup.isNotEmpty) l4 = l4.where(sup.contains).toList();
+    l4.sort();
+    var l5 = k == null ? <int>[] : decodeBands(nm[k] ?? '').toList();
+    if (nrSup.isNotEmpty) l5 = l5.where(nrSup.contains).toList();
+    l5.sort();
+    final cur4 = int.tryParse(sig['band'] ?? '');
+    final cur5 = nrBandNum(sig);
+    final mode = nm['NetworkMode'] ?? '';
+    Widget chips(List<int> l, String pre, int? cur, Map<int, String> mhz) => Wrap(spacing: 6, runSpacing: 4, children: [
+          for (final b in l)
+            Chip(
+              visualDensity: VisualDensity.compact,
+              backgroundColor: b == cur ? kGreen : null,
+              side: b == cur ? BorderSide.none : null,
+              label: Text(mhz[b] == null ? '$pre$b' : '$pre$b · ${mhz[b]}',
+                  style: TextStyle(fontSize: 12, color: b == cur ? Colors.black : null, fontWeight: b == cur ? FontWeight.bold : null)),
+            ),
+        ]);
+    return card('الترددات المحددة', [
+      Text('الوضع: ${ML[mode] ?? (mode.isEmpty ? '-' : mode)}', style: const TextStyle(color: Colors.white70, fontSize: 13)),
+      const SizedBox(height: 10),
+      Text('4G (${l4.length})', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+      const SizedBox(height: 4),
+      if (l4.isEmpty) const Text('-') else chips(l4, 'B', cur4, kLteMhz),
+      const SizedBox(height: 12),
+      Text(k == null ? '5G' : '5G (${l5.length})', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+      const SizedBox(height: 4),
+      if (k == null)
+        const Text('الراوتر ما يعلن نطاقات 5G في إعداداته.', style: TextStyle(color: Colors.white54, fontSize: 13))
+      else if (mode == '03')
+        const Text('الوضع «4G فقط»: 5G معطّل.', style: TextStyle(color: Colors.orangeAccent, fontSize: 13))
+      else if (l5.isEmpty)
+        const Text('-')
+      else
+        chips(l5, 'n', cur5, kNrMhz),
+      const SizedBox(height: 6),
+      const Text('الأخضر = النطاق المتصل الآن · الرقم بعد النقطة = التردد بالميجاهرتز',
+          style: TextStyle(fontSize: 11, color: Colors.white54)),
+    ]);
+  }
+
   List<Widget> chartsTab() => [
         for (final e in [('RSRP', hR, kGreen), ('SINR', hS, Colors.orange)])
           card('${e.$1}  ${e.$2.isEmpty ? '-' : fmt(e.$2.last)}', [
@@ -1224,20 +1245,24 @@ class _H extends State<Home> {
           ]),
       ];
 
-  Widget tabBtn(int i, IconData ic, String t, {VoidCallback? onTap}) => Expanded(
-      child: InkWell(
-          onTap: onTap ?? () => setState(() => tab = i),
-          child: Container(
-              color: onTap == null && tab == i ? kGreen : const Color(0xFF3A3A3A),
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: Column(children: [
-                Icon(ic, color: onTap == null && tab == i ? Colors.black : Colors.white70),
-                Text(t, style: TextStyle(fontSize: 11, color: onTap == null && tab == i ? Colors.black : Colors.white70)),
-              ]))));
+  Widget tabBtn(int i, IconData ic, String t, {VoidCallback? onTap, bool action = false}) {
+    final on = !action && tab == i;
+    final off = action && onTap == null;
+    return Expanded(
+        child: InkWell(
+            onTap: action ? onTap : () => setState(() => tab = i),
+            child: Container(
+                color: on ? kGreen : const Color(0xFF3A3A3A),
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Column(children: [
+                  Icon(ic, color: on ? Colors.black : (off ? Colors.white30 : Colors.white70)),
+                  Text(t, style: TextStyle(fontSize: 11, color: on ? Colors.black : (off ? Colors.white30 : Colors.white70))),
+                ]))));
+  }
 
   Widget devicesView() => ListView(padding: const EdgeInsets.all(14), children: [
         const SizedBox(height: 30),
-        const Text('لوحة الراوتر', textAlign: TextAlign.center, style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: kGreen)),
+        const Text('Kwifi', textAlign: TextAlign.center, style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: kGreen)),
         const SizedBox(height: 6),
         const Text('اختر الجهاز للدخول', textAlign: TextAlign.center, style: TextStyle(color: Colors.white54)),
         const SizedBox(height: 18),
@@ -1288,7 +1313,7 @@ class _H extends State<Home> {
                   icon: const Icon(Icons.arrow_back),
                   label: const Text('رجوع للأجهزة'))),
         const SizedBox(height: 40),
-        const Text('لوحة الراوتر', textAlign: TextAlign.center, style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: kGreen)),
+        const Text('Kwifi', textAlign: TextAlign.center, style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: kGreen)),
         const SizedBox(height: 24),
         TextField(controller: host, textDirection: TextDirection.ltr, decoration: const InputDecoration(labelText: 'عنوان الراوتر')),
         const SizedBox(height: 10),
@@ -1364,16 +1389,16 @@ class _H extends State<Home> {
       Container(height: 3, color: kGreen),
       NetQualityBanner(nq),
       Row(children: [
-        tabBtn(0, Icons.cell_tower, 'CELL'),
-        tabBtn(1, Icons.router, 'ROUTER'),
-        tabBtn(2, Icons.show_chart, 'CHARTS'),
-        tabBtn(3, Icons.refresh, 'RECONNECT', onTap: busy ? null : reconnect),
-        tabBtn(4, Icons.tune, 'MODES', onTap: openGame),
+        tabBtn(0, Icons.home, 'الرئيسية'),
+        tabBtn(2, Icons.lock, 'النطاقات', action: true, onTap: busy ? null : openKiBands),
+        tabBtn(3, Icons.radar, 'الفحص', action: true, onTap: busy ? null : openScan),
+        tabBtn(4, Icons.wifi, 'الواي فاي', action: true, onTap: busy ? null : openWifi),
+        tabBtn(1, Icons.router, 'الراوتر'),
       ]),
       if (busy) const LinearProgressIndicator(),
       Expanded(
           child: ListView(children: [
-        ...(tab == 0 ? <Widget>[SignalHero(sig: sig, st: stx), ...cellTab()] : tab == 1 ? routerTab() : chartsTab()),
+        ...(tab == 1 ? routerTab() : <Widget>[SignalHero(sig: sig, st: stx), bandsCard(), ...cellTab(), ...chartsTab()]),
         if (msg.isNotEmpty) Padding(padding: const EdgeInsets.all(12), child: SelectableText(msg)),
       ])),
     ])));
