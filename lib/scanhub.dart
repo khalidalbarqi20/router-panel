@@ -3,6 +3,7 @@ import 'download.dart';
 import 'game.dart';
 import 'kisignals.dart';
 import 'netinfo.dart';
+import 'nr5g.dart';
 import 'nrtest.dart';
 import 'pubg.dart';
 
@@ -40,6 +41,9 @@ class ScanHub extends StatelessWidget {
           _tile(context, Icons.compare_arrows, 'إشارات الترددات',
               'قارن SINR وRSRP وRSRQ لكل تردد، وقياس نطاقات 4G واحدًا واحدًا',
               KiSignals(rd: rd, wr: wr, relogin: relogin)),
+          _tile(context, Icons.network_check, 'فحص 5G',
+              'قراءة فقط: إشارة 5G وخلاياه وقدرات الراوتر، ثم اختبار 5G على كل نطاق 4G',
+              Nr5gScanPage(ctl: ctl, rd: rd, relogin: relogin)),
           _tile(context, Icons.hub, 'اختبار نطاقات 5G',
               'يجرّب كل نطاق 5G لحاله ويقيس إشارته ثم يرجّع إعدادك', NrTestPage(ctl: ctl)),
           _tile(context, Icons.wifi_find, 'فحص الواي فاي والقنوات',
