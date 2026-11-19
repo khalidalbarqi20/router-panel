@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 const Color _kGreen = Color(0xFF39D353);
+const Map<String, String> _modeName = <String, String>{'00': 'تلقائي (4G+5G)', '03': '4G فقط', '08': '5G فقط', '01': '2G فقط', '02': '3G فقط'};
 const FlutterSecureStorage _store = FlutterSecureStorage();
 
 /// قوائم احتياطية إذا الراوتر ما أعطى قائمة نطاقاته (نفس نطاقات تطبيق 5GCtrl).
@@ -77,6 +78,8 @@ class _KiBandLockState extends State<KiBandLock> {
   String? nrKey;
   bool nrOk = false;
   bool nrForce = false;
+  String mode = '00';
+  List<String> modes = <String>[];
   String listRaw = '';
   List<int> lteAll = <int>[], nrAll = <int>[];
   Set<int> lte = <int>{}, nr = <int>{};
@@ -148,6 +151,9 @@ class _KiBandLockState extends State<KiBandLock> {
       };
       final nrList = (nrFound.length >= 3 ? nrFound.toList() : _kNrDefault.toList())..sort();
 
+      final ml = <String>[for (final m in RegExp(r'<Access>(\w+)</Access>').allMatches(l)) m[1]!];
+      modes = ml.isEmpty ? <String>['00', '03', '08'] : ml;
+      mode = n['NetworkMode'] ?? '00';
       listRaw = l;
       orig = n;
       firstOrig ??= Map<String, String>.from(n);
@@ -191,7 +197,7 @@ class _KiBandLockState extends State<KiBandLock> {
   int _vOk = 0;
 
   Map<String, String> _over(Set<int> l, Set<int> n, {bool withNr = true}) {
-    final o = <String, String>{'LTEBand': _hexOf(l, orig['LTEBand'] ?? '')};
+    final o = <String, String>{'LTEBand': _hexOf(l, orig['LTEBand'] ?? ''), 'NetworkMode': mode};
     if (withNr && nrKey != null && nrOk) o[nrKey!] = _hexOf(n, orig[nrKey!] ?? '');
     return o;
   }
@@ -215,9 +221,17 @@ class _KiBandLockState extends State<KiBandLock> {
   }
 
   Future<String> _sendAny(List<String> xs) async {
+    try {
+      await widget.relogin();
+    } catch (_) {}
     var last = '';
     for (var i = 0; i < xs.length; i++) {
-      last = await _send(xs[i]);
+      try {
+        last = await widget.wr('net/net-mode', xs[i]);
+      } catch (_) {
+        await widget.relogin();
+        last = await widget.wr('net/net-mode', xs[i]);
+      }
       if (_errCode(last) != '100006') {
         _vOk = i;
         return last;
@@ -240,17 +254,19 @@ class _KiBandLockState extends State<KiBandLock> {
 
   /// يتأكد أن الراوتر أخذ الماسك المطلوب فعلًا.
   Future<bool> _verify(Set<int> l, Set<int> n, {required bool nrToo}) async {
-    await Future<void>.delayed(const Duration(seconds: 12));
-    for (var i = 0; i < 8; i++) {
+    for (var i = 0; i < 10; i++) {
+      await Future<void>.delayed(Duration(seconds: i == 0 ? 6 : 5));
       try {
-        await widget.relogin();
-        final c = _kv(await widget.rd('net/net-mode'));
+        var c = _kv(await widget.rd('net/net-mode'));
+        if (!c.containsKey('LTEBand')) {
+          await widget.relogin();
+          c = _kv(await widget.rd('net/net-mode'));
+        }
         final okL = _parse(c['LTEBand'] ?? '') == _mask(l);
+        final okM = (c['NetworkMode'] ?? mode) == mode;
         final okN = !(nrToo && nrKey != null && nrOk) || _parse(c[nrKey!] ?? '') == _mask(n);
-        return okL && okN;
-      } catch (_) {
-        await Future<void>.delayed(const Duration(seconds: 6));
-      }
+        if (okL && okM && okN) return true;
+      } catch (_) {}
     }
     return false;
   }
@@ -467,26 +483,41 @@ class _KiBandLockState extends State<KiBandLock> {
 
   Widget _status() {
     final b = sig['band'] ?? '';
-    final nb = sig['nrband'] ?? '';
+    final hasLte = b.isNotEmpty && (sig['rsrp'] ?? '').isNotEmpty;
+    final hasNr = (sig['nrrsrp'] ?? '').isNotEmpty;
+    final t = hasLte && hasNr ? '4G + 5G معًا' : hasNr ? '5G فقط' : hasLte ? '4G فقط' : 'لا توجد إشارة (قد يكون الراوتر يعيد الاتصال)';
     final parts = <String>[
-      if (b.isNotEmpty) '4G: B$b',
-      if (nb.isNotEmpty && nb != 'None') '5G: $nb',
+      if (hasLte) 'رئيسي: B$b',
+      if (hasNr) '5G: ${sig['nrband'] ?? ''}',
       if ((sig['rsrp'] ?? '').isNotEmpty) 'RSRP ${sig['rsrp']}',
-      if ((sig['nrrsrp'] ?? '').isNotEmpty && sig['nrrsrp'] != 'None') 'NR RSRP ${sig['nrrsrp']}',
+      if ((sig['sinr'] ?? '').isNotEmpty) 'SINR ${sig['sinr']}',
     ];
-    return _card('المتصل الآن', [Text(parts.isEmpty ? 'لا توجد قراءة' : parts.join('   ·   '))]);
+    return _card('الشبكة الآن: $t', [Text(parts.isEmpty ? '-' : parts.join('   ·   '))]);
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('قفل النطاقات'), actions: [
+      appBar: AppBar(title: const Text('الراوتر والنطاقات'), actions: [
         IconButton(onPressed: busy ? null : _load, icon: const Icon(Icons.refresh), tooltip: 'تحديث'),
         IconButton(onPressed: busy ? null : _diag, icon: const Icon(Icons.bug_report), tooltip: 'تشخيص'),
       ]),
       body: ListView(padding: const EdgeInsets.all(12), children: [
         if (busy) const LinearProgressIndicator(),
         _status(),
+        _card('وضع الشبكة', [
+          Wrap(spacing: 6, children: [
+            for (final m in modes)
+              ChoiceChip(
+                label: Text(_modeName[m] ?? m),
+                selected: mode == m,
+                selectedColor: _kGreen,
+                labelStyle: TextStyle(color: mode == m ? Colors.black : null),
+                onSelected: busy ? null : (_) => setState(() => mode = m),
+              ),
+          ]),
+        ]),
+        _section('نطاقات 4G (LTE)', lteAll, lte, 'B'),
         if (nrKey == null)
           _card('نطاقات 5G', [
             const Text('الراوتر ما أرجع حقل نطاقات 5G داخل net-mode، فما أقدر أقفلها من هنا. اضغط أيقونة التشخيص وأرسل لي النتيجة.')
@@ -502,7 +533,6 @@ class _KiBandLockState extends State<KiBandLock> {
             ]),
           _section('نطاقات 5G (NR)', nrAll, nr, 'N'),
         ],
-        _section('نطاقات 4G (LTE)', lteAll, lte, 'B'),
         _card('إعدادات محفوظة', [
           if (profiles.isEmpty) const Text('احفظ اختيارك باسم الشركة (STC / Zain / Mobily) وبدّل بينها بضغطة.'),
           Wrap(spacing: 6, children: [
