@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'bands.dart';
 
 const Color _kGreen = Color(0xFF39D353);
 const Map<String, String> _modeName = <String, String>{'00': 'تلقائي (4G+5G)', '03': '4G فقط', '08': '5G فقط', '01': '2G فقط', '02': '3G فقط'};
@@ -407,7 +408,7 @@ class _KiBandLockState extends State<KiBandLock> {
       try {
         last = _kv(await widget.rd('device/signal'));
         if (_n(last['nrrsrp']) != null) {
-          final nb = RegExp(r'\d+').firstMatch(last['nrband'] ?? '')?[0];
+          final nb = nrBandNum(last);
           return (
             true,
             'سجّل على 5G${nb == null ? '' : ' (n$nb)'} · RSRP ${last['nrrsrp']} · SINR ${last['nrsinr'] ?? '-'}'
@@ -698,7 +699,7 @@ class _KiBandLockState extends State<KiBandLock> {
     final t = hasLte && hasNr ? '4G + 5G معًا' : hasNr ? '5G فقط' : hasLte ? '4G فقط' : 'لا توجد إشارة (قد يكون الراوتر يعيد الاتصال)';
     final parts = <String>[
       if (hasLte) 'رئيسي: B$b',
-      if (hasNr) '5G: ${sig['nrband'] ?? ''}',
+      if (hasNr) '5G: ${nrBandNum(sig) == null ? (sig['nrdlfreq'] ?? '') : 'n${nrBandNum(sig)}'}',
       if ((sig['rsrp'] ?? '').isNotEmpty) 'RSRP ${sig['rsrp']}',
       if ((sig['sinr'] ?? '').isNotEmpty) 'SINR ${sig['sinr']}',
     ];

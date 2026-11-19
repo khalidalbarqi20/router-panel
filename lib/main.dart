@@ -1223,9 +1223,15 @@ class _H extends State<Home> {
       const SizedBox(height: 12),
       Text(k == null ? '5G' : '5G (${l5.length})', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
       const SizedBox(height: 4),
-      if (k == null)
-        const Text('الراوتر ما يعلن نطاقات 5G في إعداداته.', style: TextStyle(color: Colors.white54, fontSize: 13))
-      else if (mode == '03')
+      if (k == null) ...[
+        if (cur5 != null)
+          chips(<int>[cur5], 'n', cur5, kNrMhz)
+        else if ((sig['nrrsrp'] ?? '').isNotEmpty && sig['nrrsrp'] != 'None')
+          Text('5G متصل (التردد: ${sig['nrdlfreq'] ?? 'غير معروف'}) — الراوتر ما يعطي رقم النطاق مباشرة.',
+              style: const TextStyle(color: Colors.white70, fontSize: 13)),
+        const SizedBox(height: 4),
+        const Text('الراوتر ما يعلن نطاقات 5G القابلة للقفل في إعداداته.', style: TextStyle(color: Colors.white54, fontSize: 13)),
+      ] else if (mode == '03')
         const Text('الوضع «4G فقط»: 5G معطّل.', style: TextStyle(color: Colors.orangeAccent, fontSize: 13))
       else if (l5.isEmpty)
         const Text('-')

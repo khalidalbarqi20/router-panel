@@ -87,11 +87,64 @@ bool hasNrSignal(Map<String, String> s) {
   return v.isNotEmpty && v != 'None' && v != '--';
 }
 
-/// رقم نطاق 5G المتصل من device/signal (nrband).
+/// جدول نطاقات NR: [رقم النطاق، بداية DL، نهاية DL] بالميجاهرتز (3GPP).
+const List<List<int>> _nrDlRanges = <List<int>>[
+  [1, 2110, 2170], [3, 1805, 1880], [5, 869, 894], [7, 2620, 2690], [8, 925, 960],
+  [20, 791, 821], [28, 758, 803], [38, 2570, 2620], [40, 2300, 2400], [41, 2496, 2690],
+  [66, 2110, 2200], [71, 617, 652], [77, 3300, 4200], [78, 3300, 3800], [79, 4400, 5000],
+];
+
+int? _nrBandOfMhz(double mhz) {
+  int? best;
+  var w = 1 << 30;
+  for (final x in _nrDlRanges) {
+    if (mhz >= x[1] && mhz <= x[2] && (x[2] - x[1]) < w) {
+      w = x[2] - x[1];
+      best = x[0];
+    }
+  }
+  return best;
+}
+
+/// يحوّل NR-ARFCN إلى ميجاهرتز (3GPP TS 38.104).
+double? _arfcnToMhz(int n) {
+  if (n < 0) return null;
+  if (n < 600000) return n * 0.005;
+  if (n < 2016667) return 3000 + (n - 600000) * 0.015;
+  if (n <= 3279165) return 24250.08 + (n - 2016667) * 0.06;
+  return null;
+}
+
+/// رقم نطاق 5G المتصل من device/signal: أولًا حقل nrband، وإن لم يوجد يُستنتج من nrdlfreq
+/// (قد يكون ميجاهرتز أو كيلوهرتز أو رقم NR-ARFCN، فنجرّب كل الاحتمالات ونأخذ أول ما يطابق نطاقًا).
 int? nrBandNum(Map<String, String> s) {
   for (final k in <String>['nrband', 'nr_band', 'nrbandname']) {
     final m = RegExp(r'\d+').firstMatch(s[k] ?? '');
     if (m != null) return int.parse(m[0]!);
+  }
+  for (final k in <String>['nrdlfreq', 'nrdlfrequency', 'nr_dl_freq']) {
+    final raw = (s[k] ?? '').trim();
+    final m = RegExp(r'\d+(\.\d+)?').firstMatch(raw);
+    if (m == null) continue;
+    final v = double.parse(m[0]!);
+    final t = raw.toLowerCase();
+    final cands = <double>[];
+    if (t.contains('ghz')) {
+      cands.add(v * 1000);
+    } else if (t.contains('khz')) {
+      cands.add(v / 1000);
+    } else if (t.contains('mhz')) {
+      cands.add(v);
+    } else {
+      cands.add(v); // ميجاهرتز
+      cands.add(v / 1000); // كيلوهرتز
+      final a = _arfcnToMhz(v.toInt());
+      if (a != null) cands.add(a); // NR-ARFCN
+    }
+    for (final c in cands) {
+      final b = _nrBandOfMhz(c);
+      if (b != null) return b;
+    }
   }
   return null;
 }
