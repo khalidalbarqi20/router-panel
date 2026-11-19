@@ -8,6 +8,7 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+          flutter-version: '3.32.8'
       - name: Create Android project and apply sources
         run: |
           flutter create --platforms=android --project-name router_panel app
