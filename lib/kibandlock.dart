@@ -188,6 +188,44 @@ class _KiBandLockState extends State<KiBandLock> {
 
   String _xml(Map<String, String> m) => m.entries.map((e) => '<${e.key}>${e.value}</${e.key}>').join();
 
+  int _vOk = 0;
+
+  Map<String, String> _over(Set<int> l, Set<int> n, {bool withNr = true}) {
+    final o = <String, String>{'LTEBand': _hexOf(l, orig['LTEBand'] ?? '')};
+    if (withNr && nrKey != null && nrOk) o[nrKey!] = _hexOf(n, orig[nrKey!] ?? '');
+    return o;
+  }
+
+  /// يجرّب أشكال طلب مختلفة لأن بعض الفيرمويرات ترفض الشكل الأول بكود 100006.
+  List<String> _variants(Map<String, String> base, Map<String, String> over) {
+    final all = Map<String, String>.from(base)..addAll(over);
+    final fixed = Map<String, String>.from(all);
+    _fixNb(fixed);
+    bool bm(String k) {
+      final x = k.toLowerCase();
+      return x.contains('band') || x.contains('mode');
+    }
+
+    final core = <String, String>{for (final e in fixed.entries) if (bm(e.key)) e.key: e.value};
+    final slim = <String, String>{
+      for (final e in fixed.entries)
+        if (e.key == 'NetworkMode' || e.key == 'LTEBand' || e.key.toLowerCase() == 'networkoption') e.key: e.value
+    };
+    return <String>[_xml(core), _xml(fixed), _xml(all), _xml(slim)];
+  }
+
+  Future<String> _sendAny(List<String> xs) async {
+    var last = '';
+    for (var i = 0; i < xs.length; i++) {
+      last = await _send(xs[i]);
+      if (_errCode(last) != '100006') {
+        _vOk = i;
+        return last;
+      }
+    }
+    return last;
+  }
+
   Future<String> _send(String xml) async {
     try {
       await widget.relogin();
@@ -236,13 +274,7 @@ class _KiBandLockState extends State<KiBandLock> {
   Future<void> _restore() async {
     final f = firstOrig;
     if (f == null) return;
-    final m = <String, String>{};
-    for (final e in f.entries) {
-      final k = e.key.toLowerCase();
-      if (k.contains('band') || k.contains('mode')) m[e.key] = e.value;
-    }
-    _fixNb(m);
-    await _send(_xml(m));
+    await _sendAny(_variants(f, <String, String>{}));
     await Future<void>.delayed(const Duration(seconds: 12));
   }
 
@@ -264,7 +296,7 @@ class _KiBandLockState extends State<KiBandLock> {
     });
     try {
       final force = nrForce;
-      final r = await _send(_xml(_body(lte, nr, withNr: !force)));
+      final r = await _sendAny(_variants(orig, _over(lte, nr, withNr: !force)));
       final e = _errCode(r);
       if (e != null) {
         _say('الراوتر رفض الطلب (كود $e). ما تغيّر شي.');
@@ -283,7 +315,7 @@ class _KiBandLockState extends State<KiBandLock> {
       }
       var extra = '';
       if (force) {
-        final r2 = await _send(_xml(_body(lte, nr)));
+        final r2 = await _sendAny(_variants(orig, _over(lte, nr)));
         final e2 = _errCode(r2);
         if (e2 != null) {
           extra = '\nالراوتر رفض حقل 5G (كود $e2)، فتم قفل 4G فقط.';
@@ -298,7 +330,7 @@ class _KiBandLockState extends State<KiBandLock> {
           }
         }
       }
-      _say('تم التطبيق وتأكدت القراءة، والراوتر متصل.$extra');
+      _say('تم التطبيق وتأكدت القراءة، والراوتر متصل. (شكل الطلب ${_vOk + 1})$extra');
     } catch (e) {
       _say('تعذّر الاتصال بالراوتر: $e');
     } finally {
