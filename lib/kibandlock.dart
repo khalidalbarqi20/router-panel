@@ -77,9 +77,14 @@ String _hexOf(Iterable<int> bands, String like) {
 }
 
 /// يلقى اسم حقل نطاقات 5G داخل رد net-mode (مثل NRBand) بدون تخمين اسم ثابت.
+const List<String> _kNrCand = <String>[
+  'NRBand', 'NrBand', 'NSABand', 'SABand', 'NRNSABand', 'NRSABand', 'NR5GBand', 'Band5G', 'NR_Band', 'NRLockBand', 'NRBandMask',
+];
+
 String? _nrKey(Map<String, String> n) {
   for (final k in n.keys) {
     final l = k.toLowerCase();
+    if (_kNrCand.any((c) => c.toLowerCase() == l)) return k;
     if (l == 'lteband' || l == 'networkband') continue;
     if (l.contains('band') && (l.contains('nr') || l.contains('5g') || l.startsWith('sa') || l.startsWith('nsa'))) {
       return k;
@@ -496,7 +501,7 @@ class _KiBandLockState extends State<KiBandLock> {
                   lines.add('نطاقات 5G: الراوتر قبل القفل وأرجعه بالقراءة.');
                 } else {
                   five5 = false;
-                  lines.add('نطاقات 5G: الراوتر ما أعاد حقل 5G بعد الإرسال، فالأغلب تجاهله ولا يدعم قفل 5G من هذي الواجهة. تم قفل 4G فقط.');
+                  lines.add('نطاقات 5G: الراوتر ما أعاد حقل 5G بعد الإرسال، فالأغلب تجاهله ولا يدعم قفل 5G من هذي الواجهة. تم قفل 4G فقط. جرّب أيقونة البحث (اكتشاف قفل 5G) في الأعلى.');
                 }
               }
             }
@@ -578,6 +583,141 @@ class _KiBandLockState extends State<KiBandLock> {
     }
     await _load();
     await _alert(ok ? 0 : 2, ok ? 'تم الرجوع للإعداد الأول' : 'ما تم الرجوع', <String>[text]);
+  }
+
+
+  Future<void> _showReport(String title, String out) async {
+    if (!mounted) return;
+    await showDialog<void>(
+        context: context,
+        builder: (d) => AlertDialog(
+              title: Text(title),
+              content: SizedBox(
+                  width: double.maxFinite,
+                  child: SingleChildScrollView(
+                      child: SelectableText(out, textDirection: TextDirection.ltr, style: const TextStyle(fontSize: 11)))),
+              actions: [
+                TextButton(onPressed: () => Clipboard.setData(ClipboardData(text: out)), child: const Text('نسخ')),
+                TextButton(onPressed: () => Navigator.pop(d), child: const Text('إغلاق')),
+              ],
+            ));
+  }
+
+  /// يكتشف اسم وصيغة حقل قفل 5G اللي يقبله الراوتر فعلًا: يرسل كل نطاقات 5G (بدون تقييد، فما يتغير سلوك الراوتر)
+  /// بأسماء وصيغ محتملة، ثم يقرأ net-mode ويشوف أي حقل جديد ظهر. الحقل اللي يرجع بالقراءة هو الحقل الحقيقي.
+  Future<void> _discover5g() async {
+    if (!await _ask('راح أجرّب أسماء وصيغ حقل 5G على الراوتر لأعرف أيها يقبله.\n'
+        'التجربة ترسل كل نطاقات 5G بدون تقييد مع نفس وضعك ونطاقات 4G الحالية، فما يتغير شي فعليًا، لكن قد ينقطع الاتصال لحظات.\n\nأكمل؟')) {
+      return;
+    }
+    setState(() {
+      busy = true;
+      msg = 'جاري اكتشاف طريقة قفل 5G، لا تقفل الصفحة...';
+    });
+    final rep = StringBuffer();
+    String? foundKey;
+    try {
+      final base = _kv(await widget.rd('net/net-mode'));
+      rep.writeln('حقول net-mode قبل: ${base.keys.join(', ')}');
+      final core = <String, String>{
+        for (final e in base.entries)
+          if (e.key.toLowerCase().contains('band') || e.key.toLowerCase().contains('mode')) e.key: e.value
+      };
+      _fixNb(core);
+      final allNr = nrAll.isEmpty ? _kNrDefault.toList() : List<int>.from(nrAll);
+      final fmts = <String, String>{
+        'hex': _hexOf(allNr, ''),
+        'n+': allNr.map((b) => 'n$b').join('+'),
+        'csv': allNr.join(','),
+      };
+      var allErr = true;
+      for (final f in fmts.entries) {
+        final m = Map<String, String>.from(core);
+        for (final k in _kNrCand) {
+          m[k] = f.value;
+        }
+        String r;
+        try {
+          r = await _send(_xml(m));
+        } catch (e) {
+          r = 'خطأ: $e';
+        }
+        final er = _errCode(r);
+        rep.writeln('إرسال كل الأسماء بصيغة [${f.key}] -> ${er != null ? 'error $er' : 'تم القبول بدون خطأ'}');
+        if (er != null) continue;
+        allErr = false;
+        await Future<void>.delayed(const Duration(seconds: 6));
+        var c = <String, String>{};
+        try {
+          c = _kv(await widget.rd('net/net-mode'));
+          if (!c.containsKey('LTEBand')) {
+            await widget.relogin();
+            c = _kv(await widget.rd('net/net-mode'));
+          }
+        } catch (e) {
+          rep.writeln('قراءة net-mode: $e');
+        }
+        final nw = c.entries.where((e) => !base.containsKey(e.key)).toList();
+        if (nw.isNotEmpty) {
+          foundKey = nw.first.key;
+          rep.writeln('ظهر حقل جديد بعد الإرسال: ${nw.map((e) => '${e.key}=${e.value}').join(' | ')}  (الصيغة: ${f.key})');
+          break;
+        }
+        rep.writeln('ما ظهر أي حقل 5G جديد بعد القراءة.');
+      }
+      if (foundKey == null && allErr) {
+        rep.writeln('الراوتر رفض الإرسال الجماعي، أجرّب كل اسم لحاله بصيغة hex:');
+        for (final k in _kNrCand) {
+          final m = Map<String, String>.from(core)..[k] = fmts['hex']!;
+          String r;
+          try {
+            r = await _send(_xml(m));
+          } catch (e) {
+            r = 'خطأ: $e';
+          }
+          final er = _errCode(r);
+          rep.writeln('$k -> ${er != null ? 'error $er' : 'مقبول'}');
+          if (er != null) continue;
+          await Future<void>.delayed(const Duration(seconds: 6));
+          try {
+            final c = _kv(await widget.rd('net/net-mode'));
+            final nw = c.entries.where((e) => !base.containsKey(e.key)).toList();
+            if (nw.isNotEmpty) {
+              foundKey = nw.first.key;
+              rep.writeln('ظهر حقل جديد: ${nw.map((e) => '${e.key}=${e.value}').join(' | ')}');
+              break;
+            }
+          } catch (e) {
+            rep.writeln('قراءة: $e');
+          }
+        }
+      }
+      rep.writeln('\nالنتيجة: ${foundKey == null ? 'الراوتر ما قبل أي حقل 5G في net-mode.' : 'الحقل المقبول: $foundKey'}');
+      rep.writeln('\n## net-mode-list\n${_hide(listRaw.length > 3000 ? listRaw.substring(0, 3000) : listRaw)}');
+      try {
+        final sg = _hide(await widget.rd('device/signal'));
+        rep.writeln('\n## device/signal\n${sg.length > 1800 ? sg.substring(0, 1800) : sg}');
+      } catch (_) {}
+      for (final p in const [
+        'net/nr-band', 'net/nrband', 'net/nsa-band', 'net/sa-band', 'net/net-nr-band', 'net/nr-net-mode',
+        'net/net-feature-switch', 'net/network', 'net/lte-band-lock', 'device/antenna_type',
+      ]) {
+        String r;
+        try {
+          final x = await widget.rd(p);
+          final e = _errCode(x);
+          r = e != null ? 'error $e' : (_hide(x).length > 300 ? _hide(x).substring(0, 300) : _hide(x));
+        } catch (_) {
+          r = 'خطأ اتصال';
+        }
+        rep.writeln('## GET $p -> $r');
+      }
+    } catch (e) {
+      rep.writeln('خطأ: $e');
+    } finally {
+      await _load();
+    }
+    await _showReport(foundKey == null ? 'الراوتر ما قبل حقل 5G' : 'لقيت حقل قفل 5G: $foundKey', rep.toString());
   }
 
   Future<void> _diag() async {
@@ -712,6 +852,7 @@ class _KiBandLockState extends State<KiBandLock> {
       appBar: AppBar(title: const Text('النطاقات (تعديل وقفل)'), actions: [
         IconButton(onPressed: busy ? null : _load, icon: const Icon(Icons.refresh), tooltip: 'تحديث'),
         IconButton(onPressed: busy ? null : _diag, icon: const Icon(Icons.bug_report), tooltip: 'تشخيص'),
+        IconButton(onPressed: busy ? null : _discover5g, icon: const Icon(Icons.manage_search), tooltip: 'اكتشاف قفل 5G'),
       ]),
       body: ListView(padding: const EdgeInsets.all(12), children: [
         if (busy) const LinearProgressIndicator(),
